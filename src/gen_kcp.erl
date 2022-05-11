@@ -10,7 +10,11 @@
 -author("huangzaoyi").
 
 %% API
--export([]).
+-export([
+    create/1
+    , send/2
+    , recv/1
+]).
 
 %% 报文段结构
 %%0               4   5   6       8 (BYTE)
@@ -66,3 +70,43 @@
     , output                                   %% output: 下层协议输出函数
     , writelog                                 %% writelog: 日志函数
 }).
+
+-spec create(map()) -> #kcp{}.
+create(Opts) ->
+    todo.
+
+-spec send(#kcp{}, binary()) -> {ok, #kcp{}} | {error, term()}.
+send(Kcp, Data) ->
+    todo.
+
+-spec recv(#kcp{}) -> {ok, #kcp{}, binary()} | {error, term()}.
+recv(Kcp) ->
+    todo.
+
+-spec getopts(#kcp{}, list()) -> {ok, [{atom(), term()}]} | {error, term()}.
+getopts(Kcp, Opts) ->
+    todo.
+
+-spec setopts(#kcp{}, [{atom(), term()}]) -> ok | {error, term()}.
+setopts(Kcp, Opts) ->
+    todo.
+
+-spec output(#kcp{}) -> {ok, #kcp{}} | {error, term()}.
+output(Kcp) ->
+    todo.
+
+-spec input(#kcp{}) -> {ok, #kcp{}} | {error, term()}.
+input(Kcp) ->
+    todo.
+
+-spec update(#kcp{}, pos_integer()) -> {ok, #kcp{}} | {error, term()}.
+update(Kcp, Current) ->
+    todo.
+
+-spec check(#kcp{}, pos_integer()) -> {ok, #kcp{}} | {error, term()}.
+check(Kcp, Current) ->
+    todo.
+
+-spec flush(#kcp{}) -> {ok, #kcp{}} | {error, term()}.
+flush(Kcp) ->
+    todo.
