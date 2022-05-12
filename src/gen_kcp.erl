@@ -57,6 +57,9 @@
 -define(KCP_PROBE_LIMIT, 120000).
 -define(KCP_FASTACK_LIMIT, 5).
 
+-define(IF_TRUE(If, True, False), case If of true -> True; _ -> False end).
+-define(TIME_DIFF(Later, Earlier), Later - Earlier).
+
 %% kcp结构
 -record(kcp, {
     conv, mtu, mss, state                      %% conv: 连接标识；mtu, mss: 最大传输单元 (Maximum Transmission Unit) 和最大报文段大小. mss = mtu - 包头长度(24)；state: 连接状态, 0 表示连接建立, -1 表示连接断开
@@ -153,16 +156,27 @@ create(Conv, Socket) ->
     }.
 
 -spec send(#kcp{}, binary()) -> {ok, #kcp{}} | {error, term()}.
-send(#kcp{conv = Conv, mss = Mss}, Data) when is_binary(Data) ->
+send(Kcp = #kcp{mss = Mss}, Data) when is_binary(Data) ->
     %% 计算分片数量
     Len = byte_size(Data),
-    Count =
-        case Len =< Mss of
-            true ->
-                1;
-            _ ->
-                erlang:ceil(Len / Mss)
-        end.
+    Count = ?IF_TRUE(Len =< Mss, 1, erlang:ceil(Len / Mss)),
+    case Count >= ?KCP_WND_RCV of
+        true -> %% 数据包太大了
+            {error, data_oversize};
+        _ ->
+            NewKcp = send_add_seq(Kcp, 1, Count, Data),
+            {ok, NewKcp}
+    end.
+
+%% 发送数据时添加分片
+send_add_seq(Kcp = #kcp{conv = Conv, mss = Mss, snd_queue = SndQueue, nsnd_que = NSndQue}, Idx, Count, <<Data:Mss/binary, Bin>>) when Idx < Count ->
+    KcpSeq = #kcpseq{conv = Conv, frg = Count - Idx, len = Mss, data = Data},
+    NewKcp = Kcp#kcp{snd_queue = queue:in(KcpSeq, SndQueue), nsnd_que = NSndQue + 1},
+    send_add_seq(NewKcp, Idx + 1, Count, Bin);
+send_add_seq(Kcp = #kcp{conv = Conv, mss = Mss, snd_queue = SndQueue, nsnd_que = NSndQue}, Idx, Count, Data) when Idx =:= Count ->
+    KcpSeq = #kcpseq{conv = Conv, frg = Count - Idx, len = Mss, data = Data},
+    NewKcp = Kcp#kcp{snd_queue = queue:in(KcpSeq, SndQueue), nsnd_que = NSndQue + 1},
+    NewKcp.
 
 -spec recv(#kcp{}) -> {ok, #kcp{}, binary()} | {error, term()}.
 recv(Kcp) ->
@@ -185,13 +199,56 @@ input(Kcp) ->
     todo.
 
 -spec update(#kcp{}, pos_integer()) -> {ok, #kcp{}} | {error, term()}.
-update(Kcp, Current) ->
-    todo.
+update(Kcp = #kcp{updated = Updated, ts_flush = TsFlush, interval = Interval}, Current) ->
+    {NewUpdated, NewTsFlush0} =
+        case Updated =:= 0 of
+            true ->
+                {1, Current};
+            _ ->
+                {Updated, TsFlush}
+        end,
+
+    Slap = ?TIME_DIFF(Current, TsFlush),
+    {NewSlap, NewTsFlush1} =
+        case Slap >= 10000 orelse Slap < -10000 of
+            true ->
+                {0, Current};
+            _ ->
+                {Slap, NewTsFlush0}
+        end,
+
+    case NewSlap >= 0 of
+        true ->
+            NewTsFlush2 = NewTsFlush1 + Interval,
+            NewTsFlush =
+                case ?TIME_DIFF(Current, NewTsFlush2) >= 0 of
+                    true ->
+                        Current + Interval;
+                    _ ->
+                        NewTsFlush2
+                end,
+            NewKcp = Kcp#kcp{current = Current, updated = NewUpdated, ts_flush = NewTsFlush},
+            flush(NewKcp);
+        _ ->
+            NewKcp = Kcp#kcp{current = Current, updated = NewUpdated, ts_flush = NewTsFlush1},
+            {ok, NewKcp}
+    end.
 
 -spec check(#kcp{}, pos_integer()) -> {ok, #kcp{}} | {error, term()}.
 check(Kcp, Current) ->
     todo.
 
 -spec flush(#kcp{}) -> {ok, #kcp{}} | {error, term()}.
-flush(Kcp) ->
-    todo.
+flush(Kcp = #kcp{updated = 1}) ->
+    %% TODO 发送ACK数据报
+    %% 探测远端接收窗口大小
+
+    todo;
+flush(Kcp = #kcp{updated = 0}) -> %% 没有调用update方法不给执行
+    {ok, Kcp}.
+
+%% 剩余接收窗口大小
+wnd_unused(#kcp{nrcv_que = NRcvQue, rcv_wnd = RcvWnd}) when RcvWnd > NRcvQue ->
+    RcvWnd - NRcvQue;
+wnd_unused(#kcp{}) ->
+    0.
