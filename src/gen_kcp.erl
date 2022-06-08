@@ -15,6 +15,11 @@
     , send/2
     , recv/1
     , update/2
+    , check/2
+    , getopts/2
+    , setopts/2
+    , output/2
+    , input/2
 ]).
 
 %% 报文段结构
@@ -79,18 +84,14 @@
     , snd_queue, rcv_queue                     %% snd_queue, rcv_queue: 发送队列和接收队列
     , snd_buf, rcv_buf                         %% snd_buf, rcv_buf: 发送缓冲区和接收缓冲区
     , acklist                                  %% acklist: ACK 列表. 待发送的 ACK 的相关信息会先存在 ACK 列表中, flush 时一并发送
-    , buffer                                   %% buffer: flush 时用到的临时缓冲区
     , fastresend                               %% fastresend: ACK 失序 fastresend 次时触发快速重传
     , fastlimit                                %% fastlimit: 传输次数小于 fastlimit 的报文才会执行快速重传
-    , nocwnd, stream                           %% nocwnd: 是否不考虑拥塞窗口；stream: 是否开启流模式, 开启后可能会合并包
-    , logmask                                  %% logmask: 用于控制日志
-    , output                                   %% output: 下层协议输出函数
-    , writelog                                 %% writelog: 日志函数
+    , nocwnd                                   %% nocwnd: 是否不考虑拥塞窗口
     , socket
 }).
 
 %% kcp报文段
--record(kcpseq, {
+-record(kcpseg, {
     conv                       %% 连接标识
     , cmd                      %% 指令
     , frg                      %% 分片数量。表示随后还有多少个报文属于同一个包
@@ -126,7 +127,6 @@ create(Conv, Socket) ->
         , probe = 0
         , mtu = ?KCP_MTU_DEF
         , mss = ?KCP_MTU_DEF - ?KCP_OVERHEAD
-        , stream = 0
 
         , snd_queue = queue:new()
         , rcv_queue = queue:new()
@@ -140,7 +140,6 @@ create(Conv, Socket) ->
         , acklist = queue:new()
         , rx_srtt = 0
         , rx_rttval = 0
-        , rx_rto = 0
         , rx_rto = ?KCP_RTO_DEF
         , rx_minrto = ?KCP_RTO_MIN
         , current = 0
@@ -148,7 +147,6 @@ create(Conv, Socket) ->
         , ts_flush = ?KCP_INTERVAL
         , nodelay = 0
         , updated = 0
-        , logmask = 0
         , ssthresh = ?KCP_THRESH_INIT
         , fastresend = 0
         , fastlimit = ?KCP_FASTACK_LIMIT
@@ -168,18 +166,19 @@ send(Kcp = #kcp{mss = Mss}, Data) when is_binary(Data) ->
         true -> %% 数据包太大了
             {error, data_oversize};
         _ ->
-            NewKcp = send_add_seq(Kcp, 1, Count, Data),
+            NewKcp = send_add_seg(Kcp, 1, Count, Data),
             {ok, NewKcp}
     end.
 
 %% 发送数据时添加分片
-send_add_seq(Kcp = #kcp{conv = Conv, mss = Mss, snd_queue = SndQueue, nsnd_que = NSndQue}, Idx, Count, <<Data:Mss/binary, Bin>>) when Idx < Count ->
-    KcpSeq = #kcpseq{conv = Conv, frg = Count - Idx, len = Mss, data = Data},
-    NewKcp = Kcp#kcp{snd_queue = queue:in(KcpSeq, SndQueue), nsnd_que = NSndQue + 1},
-    send_add_seq(NewKcp, Idx + 1, Count, Bin);
-send_add_seq(Kcp = #kcp{conv = Conv, snd_queue = SndQueue, nsnd_que = NSndQue}, Idx, Count, Data) when Idx =:= Count ->
-    KcpSeq = #kcpseq{conv = Conv, frg = Count - Idx, len = byte_size(Data), data = Data},
-    NewKcp = Kcp#kcp{snd_queue = queue:in(KcpSeq, SndQueue), nsnd_que = NSndQue + 1},
+send_add_seg(Kcp = #kcp{conv = Conv, mss = Mss, snd_queue = SndQueue, nsnd_que = NSndQue}, Idx, Count, Bin) when Idx < Count ->
+    <<Data:Mss/binary, RestBin/binary>> = Bin,
+    KcpSeg = #kcpseg{conv = Conv, frg = Count - Idx, len = Mss, data = Data},
+    NewKcp = Kcp#kcp{snd_queue = queue:in(KcpSeg, SndQueue), nsnd_que = NSndQue + 1},
+    send_add_seg(NewKcp, Idx + 1, Count, RestBin);
+send_add_seg(Kcp = #kcp{conv = Conv, snd_queue = SndQueue, nsnd_que = NSndQue}, Idx, Count, Data) when Idx =:= Count ->
+    KcpSeg = #kcpseg{conv = Conv, frg = Count - Idx, len = byte_size(Data), data = Data},
+    NewKcp = Kcp#kcp{snd_queue = queue:in(KcpSeg, SndQueue), nsnd_que = NSndQue + 1},
     NewKcp.
 
 -spec recv(#kcp{}) -> {ok, #kcp{}, binary()} | {error, term()}.
@@ -207,9 +206,9 @@ peeksize(#kcp{rcv_queue = RcvQueue, nrcv_que = NRcvQue}) ->
     case queue:out(RcvQueue) of
         {empty, _} ->
             -1;
-        {{value, #kcpseq{frg = 0, len = Len}}, _} ->
+        {{value, #kcpseg{frg = 0, len = Len}}, _} ->
             Len;
-        {{value, #kcpseq{frg = Frg}}, _} ->
+        {{value, #kcpseg{frg = Frg}}, _} ->
             case NRcvQue < Frg + 1 of
                 true ->
                     -1;
@@ -220,9 +219,9 @@ peeksize(#kcp{rcv_queue = RcvQueue, nrcv_que = NRcvQue}) ->
 
 do_peeksize(RcvQueue, Size) ->
     case queue:out(RcvQueue) of
-        {{value, #kcpseq{frg = 0, len = Len}}, NewRcvQueue} ->
+        {{value, #kcpseg{frg = 0, len = Len}}, _} ->
             Size + Len;
-        {{value, #kcpseq{frg = Frg, len = Len}}, NewRcvQueue} ->
+        {{value, #kcpseg{len = Len}}, NewRcvQueue} ->
             do_peeksize(NewRcvQueue, Size + Len);
         {empty, _} -> %% 正常不会走到这里
             -1
@@ -231,11 +230,11 @@ do_peeksize(RcvQueue, Size) ->
 %% 整合分段
 merge_fragment(Kcp = #kcp{rcv_queue = RcvQueue, nrcv_que = NRcvQue}, Buffer) ->
     case queue:out(RcvQueue) of
-        {{value, #kcpseq{frg = 0, data = Data}}, NewRcvQueue} ->
+        {{value, #kcpseg{frg = 0, data = Data}}, NewRcvQueue} ->
             NewKcp = Kcp#kcp{rcv_queue = NewRcvQueue, nrcv_que = NRcvQue - 1},
             NewBuffer = <<Buffer/binary, Data/binary>>,
             {NewKcp, NewBuffer};
-        {{value, #kcpseq{len = Len, data = Data}}, NewRcvQueue} ->
+        {{value, #kcpseg{data = Data}}, NewRcvQueue} ->
             NewKcp = Kcp#kcp{rcv_queue = NewRcvQueue, nrcv_que = NRcvQue - 1},
             NewBuffer = <<Buffer/binary, Data/binary>>,
             merge_fragment(NewKcp, NewBuffer);
@@ -244,17 +243,17 @@ merge_fragment(Kcp = #kcp{rcv_queue = RcvQueue, nrcv_que = NRcvQue}, Buffer) ->
     end.
 
 -spec getopts(#kcp{}, list()) -> {ok, [{atom(), term()}]} | {error, term()}.
-getopts(Kcp, Opts) ->
+getopts(_Kcp, _Opts) ->
     todo.
 
 -spec setopts(#kcp{}, [{atom(), term()}]) -> ok | {error, term()}.
-setopts(Kcp, Opts) ->
+setopts(_Kcp, _Opts) ->
     todo.
 
 -spec output(#kcp{}, binary()) -> {ok, #kcp{}} | {error, term()}.
 output(_Kcp, <<>>) ->
     ok;
-output(Kcp, Data) ->
+output(_Kcp, _Data) ->
     todo.
 
 -spec input(#kcp{}, binary()) -> {ok, #kcp{}} | {error, term()}.
@@ -262,7 +261,7 @@ input(_Kcp, <<>>) ->
     {error, kcp_data_empty}; %% 下层协议输入的数据是空的
 input(_Kcp, Bin) when byte_size(Bin) < ?KCP_OVERHEAD ->
     {error, kcp_data_err}; %% 下层协议输入的数据小于kcp协议报头大小
-input(Kcp = #kcp{una = PrevUna}, Bin) ->
+input(Kcp = #kcp{snd_una = PrevUna}, Bin) ->
     input_unpack(Kcp, Bin, PrevUna, 0, 0, 0).
 
 input_unpack(Kcp, Bin, PrevUna, AckFlag, MaxAck, LastestTs) when byte_size(Bin) < ?KCP_OVERHEAD ->
@@ -270,35 +269,38 @@ input_unpack(Kcp, Bin, PrevUna, AckFlag, MaxAck, LastestTs) when byte_size(Bin) 
     NewKcp = update_cwnd(NewKcp0, PrevUna),
     NewKcp;
 input_unpack(Kcp = #kcp{conv = Conv, probe = Probe, rcv_nxt = RcvNxt, rcv_wnd = RcvWnd}, Bin, PrevUna, AckFlag, MaxAck, LastestTs) ->
-    case bin_to_seq(Bin) of
-        {ok, KcpSeq = #kcpseq{conv = Conv, cmd = Cmd, wnd = Wnd, sn = Sn, ts = Ts}, RestBin} ->
+    case bin_to_seg(Bin) of
+        {ok, KcpSeg = #kcpseg{conv = Conv, cmd = Cmd, wnd = Wnd, sn = Sn, ts = Ts, una = Una}, RestBin} ->
             case Cmd =/= ?KCP_CMD_ACK andalso Cmd =/= ?KCP_CMD_PUSH andalso Cmd =/= ?KCP_CMD_WASK andalso Cmd =/= ?KCP_CMD_WINS of
                 true ->
                     {error, {kcp_cmd_err, Cmd}};
                 _ ->
                     NewKcp0 = Kcp#kcp{rmt_wnd = Wnd},
-                    NewKcp1 = parse_una(NewKcp0),
+                    NewKcp1 = parse_una(NewKcp0, Una),
                     NewKcp2 = shrink_buf(NewKcp1),
-                    case Cmd of
-                        ?KCP_CMD_ACK ->
-                            {NewKcp3, NewAckFlag0, NewMaxAck0, NewLastestTs0} = input_ack(NewKcp2, AckFlag, MaxAck, LastestTs);
-                        ?KCP_CMD_PUSH ->
-                            NewKcp5 =
-                                case ?_TIME_DIFF(Sn, RcvNxt + RcvWnd) < 0 of
-                                    true ->
-                                        NewKcp3 = ack_push(NewKcp2, Sn, Ts),
-                                        NewKcp4 = parse_data(NewKcp3),
-                                        NewKcp4;
-                                    _ ->
-                                        NewKcp2
-                                end,
-                            {NewKcp5, AckFlag, MaxAck, LastestTs};
-                        ?KCP_CMD_WASK ->
-                            NewKcp3 = NewKcp2#kcp{probe = Probe bor ?KCP_ASK_TELL},
-                            {NewKcp3, AckFlag, MaxAck, LastestTs};
-                        ?KCP_CMD_WINS ->
-                            {NewKcp2, AckFlag, MaxAck, LastestTs}
-                    end
+                    {NewKcp, NewAckFlag, NewMaxAck, NewLastestTs} =
+                        case Cmd of
+                            ?KCP_CMD_ACK ->
+                                {NewKcp3, NewAckFlag0, NewMaxAck0, NewLastestTs0} = input_ack(NewKcp2, KcpSeg, AckFlag, MaxAck, LastestTs),
+                                {NewKcp3, NewAckFlag0, NewMaxAck0, NewLastestTs0};
+                            ?KCP_CMD_PUSH ->
+                                NewKcp5 =
+                                    case ?_TIME_DIFF(Sn, RcvNxt + RcvWnd) < 0 of
+                                        true ->
+                                            NewKcp3 = ack_push(NewKcp2, Sn, Ts),
+                                            NewKcp4 = parse_data(NewKcp3, KcpSeg),
+                                            NewKcp4;
+                                        _ ->
+                                            NewKcp2
+                                    end,
+                                {NewKcp5, AckFlag, MaxAck, LastestTs};
+                            ?KCP_CMD_WASK ->
+                                NewKcp3 = NewKcp2#kcp{probe = Probe bor ?KCP_ASK_TELL},
+                                {NewKcp3, AckFlag, MaxAck, LastestTs};
+                            ?KCP_CMD_WINS ->
+                                {NewKcp2, AckFlag, MaxAck, LastestTs}
+                        end,
+                    input_unpack(NewKcp, RestBin, PrevUna, NewAckFlag, NewMaxAck, NewLastestTs)
             end;
         _ ->
             input_unpack(Kcp, <<>>, PrevUna, AckFlag, MaxAck, LastestTs)
@@ -307,7 +309,7 @@ input_unpack(Kcp = #kcp{conv = Conv, probe = Probe, rcv_nxt = RcvNxt, rcv_wnd = 
 %% 去掉snd_buf中小于Una的协议报
 parse_una(Kcp = #kcp{snd_buf = SndBuf, nsnd_buf = NSndBuf}, Una) ->
     case queue:out(SndBuf) of
-        {{value, #kcpseq{sn = Sn}}, NewSndBuf} when ?_TIME_DIFF(Una, Sn) > 0 ->
+        {{value, #kcpseg{sn = Sn}}, NewSndBuf} when ?_TIME_DIFF(Una, Sn) > 0 ->
             parse_una(Kcp#kcp{snd_buf = NewSndBuf, nsnd_buf = NSndBuf - 1}, Una);
         _ ->
             Kcp
@@ -316,32 +318,32 @@ parse_una(Kcp = #kcp{snd_buf = SndBuf, nsnd_buf = NSndBuf}, Una) ->
 %% 更新snd_una
 shrink_buf(Kcp = #kcp{snd_buf = SndBuf, snd_nxt = SndNxt}) ->
     case queue:out(SndBuf) of
-        {{value, #kcpseq{sn = Sn}}, _} -> %% 把第一个未ack的协议报编制作为snd_una
+        {{value, #kcpseg{sn = Sn}}, _} -> %% 把第一个未ack的协议报编制作为snd_una
             Kcp#kcp{snd_una = Sn};
         {empty, _} ->
             Kcp#kcp{snd_una = SndNxt}
     end.
 
 %% 去掉snd_buf中命中的协议报
-parse_ack(Kcp = #kcp{snd_una = SndUna, snd_nxt = SndNxt, snd_buf = SndBuf}, Sn) when ?_TIME_DIFF(Sn, SndUna) < 0 andalso ?_TIME_DIFF(Sn, SndNxt) >= 0 ->
+parse_ack(Kcp = #kcp{snd_una = SndUna, snd_nxt = SndNxt}, Sn) when ?_TIME_DIFF(Sn, SndUna) < 0 andalso ?_TIME_DIFF(Sn, SndNxt) >= 0 ->
     Kcp;
-parse_ack(Kcp, Sn) ->
-    parse_ack2(Kcp, SndBuf, Sn, []).
+parse_ack(Kcp = #kcp{snd_buf = SndBuf}, Sn) ->
+    do_parse_ack(Kcp, SndBuf, Sn, []).
 
-parse_ack2(Kcp = #kcp{nsnd_buf = NSndBuf}, SndBuf, Sn, RestSeqs) ->
+do_parse_ack(Kcp = #kcp{nsnd_buf = NSndBuf}, SndBuf, Sn, RestSegs) ->
     case queue:out(SndBuf) of
-        {{value, KcpSeq = #kcpseq{sn = Sn}}, {NewSndBufIn, NewSndBufOut}} ->
-            NewSndBuf = {NewSndBufIn, lists:reverse(RestSeqs, NewSndBufOut)},
+        {{value, #kcpseg{sn = Sn}}, {NewSndBufIn, NewSndBufOut}} ->
+            NewSndBuf = {NewSndBufIn, lists:reverse(RestSegs, NewSndBufOut)},
             Kcp#kcp{snd_buf = NewSndBuf, nsnd_buf = NSndBuf - 1};
-        {{value, #kcpseq{sn = SeqSn}}, _} when ?_TIME_DIFF(Sn, SeqSn) < 0 ->
+        {{value, #kcpseg{sn = SegSn}}, _} when ?_TIME_DIFF(Sn, SegSn) < 0 ->
             Kcp;
-        {{value, KcpSeq}, NewSndBuf} ->
-            parse_ack2(Kcp, NewSndBuf, Sn, [KcpSeq | RestSeqs]);
+        {{value, KcpSeg}, NewSndBuf} ->
+            do_parse_ack(Kcp, NewSndBuf, Sn, [KcpSeg | RestSegs]);
         {empty, _} ->
             Kcp
     end.
 
-input_ack(Kcp = #kcp{current = Current}, KcpSeq = #kcpseq{ts = Ts, sn = Sn}, AckFlag, MaxAck, LastestTs) ->
+input_ack(Kcp = #kcp{current = Current}, #kcpseg{ts = Ts, sn = Sn}, AckFlag, MaxAck, LastestTs) ->
     NewKcp0 = ?_IF_TRUE(?_TIME_DIFF(Current, Ts) >= 0, update_ack(Kcp, ?_TIME_DIFF(Current, Ts)), Kcp),
     NewKcp1 = parse_ack(NewKcp0, Sn),
     NewKcp = shrink_buf(NewKcp1),
@@ -350,16 +352,12 @@ input_ack(Kcp = #kcp{current = Current}, KcpSeq = #kcpseq{ts = Ts, sn = Sn}, Ack
             true ->
                 {1, Sn, Ts};
             _ when ?_TIME_DIFF(Sn, MaxAck) > 0 ->
-                -ifdef (KCP_FASTACK_CONSERVE).
-                    {AckFlag, Sn, Ts}
-                -else.
-                    case ?_TIME_DIFF(Ts, LastestTs) > 0 of
-                        true ->
-                            {AckFlag, Sn, Ts}
-                        _ ->
-                            {AckFlag, MaxAck, LastestTs}
-                    end
-                -endif.
+                case ?_TIME_DIFF(Ts, LastestTs) > 0 of
+                    true ->
+                        {AckFlag, Sn, Ts};
+                    _ ->
+                        {AckFlag, MaxAck, LastestTs}
+                end;
             _ ->
                 {AckFlag, Sn, Ts}
         end,
@@ -388,63 +386,59 @@ ack_push(Kcp = #kcp{acklist = AckList}, Sn, Ts) ->
     Kcp#kcp{acklist = queue:in({Sn, Ts}, AckList)}.
 
 %% 数据协议报处理
-parse_data(Kcp = #kcp{rcv_nxt = RcvNxt, rcv_wnd = RcvWnd}, #kcpseq{sn = Sn}) when ?_TIME_DIFF(Sn, RcvNxt + RcvWnd) >= 0 orelse ?_TIME_DIFF(Sn, RcvNxt) < 0 ->
+parse_data(Kcp = #kcp{rcv_nxt = RcvNxt, rcv_wnd = RcvWnd}, #kcpseg{sn = Sn}) when ?_TIME_DIFF(Sn, RcvNxt + RcvWnd) >= 0 orelse ?_TIME_DIFF(Sn, RcvNxt) < 0 ->
     Kcp;
-parse_data(Kcp = #kcp{rcv_nxt = RcvNxt, rcv_wnd = RcvWnd, rcv_buf = RcvBuf, nrcv_buf = NRcvBuf}, NewKcpSeq = #kcpseq{sn = Sn}) ->
-    NewKcp0 = do_parse_data(Kcp, NewKcpSeq, RcvBuf, NRcvBuf, []),
+parse_data(Kcp = #kcp{rcv_buf = RcvBuf, nrcv_buf = NRcvBuf}, NewKcpSeg) ->
+    NewKcp0 = do_parse_data(Kcp, NewKcpSeg, RcvBuf, NRcvBuf, []),
     NewKcp = move_to_rcv_queue(NewKcp0),
     NewKcp.
 
-do_parse_data(Kcp, NewKcpSeq = #kcpseq{sn = NewSn}, RcvBuf = {RcvBufIn, RcvBufOut}, NRcvBuf, RestSeqs) ->
+do_parse_data(Kcp, NewKcpSeg = #kcpseg{sn = NewSn}, RcvBuf = {RcvBufIn, RcvBufOut}, NRcvBuf, RestSegs) ->
     case queue:out_r(RcvBuf) of %% 从后往前出队列
-        {{value, #kcpseq{sn = NewSn}}, NewRcvBuf} -> %% 协议报重复
+        {{value, #kcpseg{sn = NewSn}}, _NewRcvBuf} -> %% 协议报重复
             Kcp;
-        {{value, #kcpseq{sn = Sn}}, _} when ?_TIME_DIFF(NewSn, Sn) > 0 ->
-            NewRcvBuf = {lists:reverse([NewKcpSeq | RestSeqs], RcvBufIn), RcvBufOut},
+        {{value, #kcpseg{sn = Sn}}, _} when ?_TIME_DIFF(NewSn, Sn) > 0 ->
+            NewRcvBuf = {lists:reverse([NewKcpSeg | RestSegs], RcvBufIn), RcvBufOut},
             Kcp#kcp{rcv_buf = NewRcvBuf, nrcv_buf = NRcvBuf + 1};
-        {{value, KcpSeq}, NewRcvBuf} ->
-            do_parse_data(Kcp, NewKcpSeq, NewRcvBuf, NRcvBuf, [KcpSeq | RestSeqs]);
+        {{value, KcpSeg}, NewRcvBuf} ->
+            do_parse_data(Kcp, NewKcpSeg, NewRcvBuf, NRcvBuf, [KcpSeg | RestSegs]);
         {empty, _} ->
-            NewRcvBuf = {lists:reverse([NewKcpSeq | RestSeqs], RcvBufIn), RcvBufOut},
-            Kcp#kcp{rcv_buf = NewRcvBuf, nrcv_buf = NRcvBuf + 1};
+            NewRcvBuf = {lists:reverse([NewKcpSeg | RestSegs], RcvBufIn), RcvBufOut},
+            Kcp#kcp{rcv_buf = NewRcvBuf, nrcv_buf = NRcvBuf + 1}
     end.
 
 %% 将有效的数据移到到rcv_queue
-move_to_rcv_queue(Kcp = #kcp{rcv_buf = RcvBuf, nrcv_buf = NRcvBuf, rcv_queue = RcvQueue, nrcv_que = NRcvQue, nrcv_nxt = RcvNxt, rcv_wnd = RcvWnd}) ->
+move_to_rcv_queue(Kcp = #kcp{rcv_buf = RcvBuf, nrcv_buf = NRcvBuf, rcv_queue = RcvQueue, nrcv_que = NRcvQue, rcv_nxt = RcvNxt, rcv_wnd = RcvWnd}) ->
     case queue:out(RcvBuf) of
-        {{value, KcpSeq = #kcpseq{sn = Sn}}, NewRcvBuf} when Sn =:= RcvNxt andalso NRcvQue < RcvWnd ->
-            NewKcp = Kcp#kcp{rcv_buf = NewRcvBuf, nrcv_buf = NRcvBuf - 1, rcv_queue = queue:in(KcpSeq, RcvQueue), nrcv_que = NRcvQue + 1, nrcv_nxt = RcvNxt + 1},
-            move_to_rcv_queue(Kcp);
+        {{value, KcpSeg = #kcpseg{sn = Sn}}, NewRcvBuf} when Sn =:= RcvNxt andalso NRcvQue < RcvWnd ->
+            NewKcp = Kcp#kcp{rcv_buf = NewRcvBuf, nrcv_buf = NRcvBuf - 1, rcv_queue = queue:in(KcpSeg, RcvQueue), nrcv_que = NRcvQue + 1, rcv_nxt = RcvNxt + 1},
+            move_to_rcv_queue(NewKcp);
         _ ->
             Kcp
     end.
 
 %% 更新ack失序次数
-parse_fastack(Kcp = #kcp{snd_una = SndUna, snd_nxt = SndNxt}, Sn, Ts) when ?_TIME_DIFF(Sn, SndUna) < 0 orelse ?_TIME_DIFF(Sn, SndNxt) >= 0 ->
-    Kcp.
+parse_fastack(Kcp = #kcp{snd_una = SndUna, snd_nxt = SndNxt}, Sn, _Ts) when ?_TIME_DIFF(Sn, SndUna) < 0 orelse ?_TIME_DIFF(Sn, SndNxt) >= 0 ->
+    Kcp;
 parse_fastack(Kcp, Sn, Ts) ->
     do_parse_fastack(Kcp, Sn, Ts, []).
 
-do_parse_fastack(Kcp = #kcp{snd_buf = SndBuf = {SndBufIn, SndBufOut}, snd_una = SndUna, snd_nxt = SndNxt}, Sn, Ts, RestSeqs) ->
+do_parse_fastack(Kcp = #kcp{snd_buf = SndBuf = {SndBufIn, SndBufOut}}, Sn, Ts, RestSegs) ->
     case queue:out(SndBuf) of
-        {{value, KcpSeq = #kcpseq{sn = SeqSn}}, _} when ?_TIME_DIFF(Sn, SeqSn) < 0 ->
-            NewSndBuf = {SndBufIn, lists:reverse(RestSeqs, SndBufOut)},
+        {{value, #kcpseg{sn = SegSn}}, _} when ?_TIME_DIFF(Sn, SegSn) < 0 ->
+            NewSndBuf = {SndBufIn, lists:reverse(RestSegs, SndBufOut)},
             Kcp#kcp{snd_buf = NewSndBuf};
-        {{value, KcpSeq = #kcpseq{fastack = FastAck, ts = SeqTs}}, NewSndBuf} ->
-            NewKcpSeq =
-                -ifdef (KCP_FASTACK_CONSERVE).
-                    KcpSeq#kcpseq{fastack = FastAck + 1}
-                -else.
-                    case ?_TIME_DIFF(Ts, SeqTs) >= 0 of
-                        true ->
-                            KcpSeq#kcpseq{fastack = FastAck + 1};
-                        _ ->
-                            KcpSeq
-                    end
-                -endif.
-            do_parse_fastack(Kcp#kcp{snd_buf = NewSndBuf}, Sn, Ts, [NewKcpSeq | RestSeqs]);
+        {{value, KcpSeg = #kcpseg{fastack = FastAck, ts = SegTs}}, NewSndBuf} ->
+            NewKcpSeg =
+                case ?_TIME_DIFF(Ts, SegTs) >= 0 of
+                    true ->
+                        KcpSeg#kcpseg{fastack = FastAck + 1};
+                    _ ->
+                        KcpSeg
+                end,
+            do_parse_fastack(Kcp#kcp{snd_buf = NewSndBuf}, Sn, Ts, [NewKcpSeg | RestSegs]);
         {empty, _} ->
-            NewSndBuf = {SndBufIn, lists:reverse(RestSeqs, SndBufOut)},
+            NewSndBuf = {SndBufIn, lists:reverse(RestSegs, SndBufOut)},
             Kcp#kcp{snd_buf = NewSndBuf}
     end.
 
@@ -520,9 +514,9 @@ update(Kcp = #kcp{updated = Updated, ts_flush = TsFlush, interval = Interval}, C
     end.
 
 -spec check(#kcp{}, pos_integer()) -> pos_integer().
-check(Kcp = #kcp{updated = 0}, Current) ->
-    Current.
-check(Kcp = #kcp{ts_flush = TsFlush, snd_buf = SndBuf, interval = Interval}, Current) ->
+check(#kcp{updated = 0}, Current) ->
+    Current;
+check(#kcp{ts_flush = TsFlush, snd_buf = SndBuf, interval = Interval}, Current) ->
     NewTsFlush = ?_IF_TRUE(Current - TsFlush >= 10000 orelse Current - TsFlush < -10000, Current, TsFlush),
     case Current >= NewTsFlush of
         true ->
@@ -540,14 +534,14 @@ check(Kcp = #kcp{ts_flush = TsFlush, snd_buf = SndBuf, interval = Interval}, Cur
 
 do_check(SndBuf, Current, TmPacket) ->
     case queue:out(SndBuf) of
-        {{value, #kcpseq{resendts = ResendTs}}, NewSndBuf} ->
+        {{value, #kcpseg{resendts = ResendTs}}, NewSndBuf} ->
             Diff = ResendTs - Current,
             case Diff =< 0 of
                 true ->
                     false;
                 _ ->
                     NewTmPacket = min(TmPacket, Diff),
-                    do_check(NewSndBuf, NewTmPacket)
+                    do_check(NewSndBuf, Current, NewTmPacket)
             end;
         {emtpy, _} ->
             TmPacket
@@ -558,13 +552,13 @@ do_check(SndBuf, Current, TmPacket) ->
 flush(Kcp = #kcp{updated = 1, conv = Conv, rcv_nxt = RcvNxt}) ->
     Buffer = <<>>,
     Wnd = wnd_unused(Kcp),
-    KcpSeq = #kcpseq{conv = Conv, frg = 0, wnd = Wnd, una = RcvNxt, len = 0, sn = 0, ts = 0, data = <<>>},
+    KcpSeg = #kcpseg{conv = Conv, frg = 0, wnd = Wnd, una = RcvNxt, len = 0, sn = 0, ts = 0, data = <<>>},
     %% 发送ACK数据报
-    {NewKcp0, NewBuffer0} = flush_ack_seq(Kcp, KcpSeq, Buffer),
+    {NewKcp0, NewBuffer0} = flush_ack_seg(Kcp, KcpSeg, Buffer),
     %% 探测远端接收窗口大小
     NewKcp1 = probe_win_size(NewKcp0),
     %% 发送探测窗口指令
-    {NewKcp2 = #kcp{snd_wnd = SndWnd, rmt_wnd = RmtWnd, nocwnd = NoCWnd, cwnd = CWnd}, NewBuffer1} = flush_probe_win(NewKcp1, KcpSeq, NewBuffer0),
+    {NewKcp2 = #kcp{snd_wnd = SndWnd, rmt_wnd = RmtWnd, nocwnd = NoCWnd, cwnd = CWnd}, NewBuffer1} = flush_probe_win(NewKcp1, KcpSeg, NewBuffer0),
     %% 计算窗口大小
     NewCWnd0 = min(SndWnd, RmtWnd),
     NewCWnd = ?_IF_TRUE(NoCWnd =:= 0, min(NewCWnd0, CWnd), NewCWnd0),
@@ -574,7 +568,7 @@ flush(Kcp = #kcp{updated = 1, conv = Conv, rcv_nxt = RcvNxt}) ->
     Resent = ?_IF_TRUE(FastResend > 0, FastResend, -1),
     RtoMin = ?_IF_TRUE(NoDelay =:= 0, RxRto bsr 3, 0),
     %% 刷新并发送数据报文段
-    {NewKcp4, Change, Lost} = flush_data_seq(NewKcp3, Resent, RtoMin, Wnd, 0, 0, [], NewBuffer1),
+    {NewKcp4, Change, Lost} = flush_data_seg(NewKcp3, Resent, RtoMin, Wnd, 0, 0, [], NewBuffer1),
     %% 更新ssthresh
     NewKcp5 = flush_change_ssthresh(NewKcp4, Change, Resent),
     NewKcp6 = flush_lost_ssthresh(NewKcp5, Lost, NewCWnd),
@@ -584,16 +578,16 @@ flush(Kcp = #kcp{updated = 0}) -> %% 没有调用update方法不给执行
     {ok, Kcp}.
 
 %% 刷新并发送ACK数据报
--spec flush_ack_seq(#kcp{}, #kcpseq{}, binary()) -> {#kcp{}, binary()}.
-flush_ack_seq(Kcp = #kcp{acklist = AckList}, KcpSeq, Buffer) ->
-    do_flush_ack_seq(Kcp, KcpSeq, AckList, Buffer).
-do_flush_ack_seq(Kcp, KcpSeq, AckList, Buffer) ->
+-spec flush_ack_seg(#kcp{}, #kcpseg{}, binary()) -> {#kcp{}, binary()}.
+flush_ack_seg(Kcp = #kcp{acklist = AckList}, KcpSeg, Buffer) ->
+    do_flush_ack_seg(Kcp, KcpSeg, AckList, Buffer).
+do_flush_ack_seg(Kcp, KcpSeg, AckList, Buffer) ->
     NewBuffer0 = flush_output(Kcp, Buffer),
     case queue:out(AckList) of
         {{value, {Sn, Ts}}, NewAckList} ->
-            NewKcpSeq = KcpSeq#kcpseq{cmd = ?KCP_CMD_ACK, sn = Sn, ts = Ts},
-            NewBuffer = add_buffer(NewKcpSeq, NewBuffer0),
-            do_flush_ack_seq(Kcp, KcpSeq, NewAckList, NewBuffer);
+            NewKcpSeg = KcpSeg#kcpseg{cmd = ?KCP_CMD_ACK, sn = Sn, ts = Ts},
+            NewBuffer = add_buffer(NewKcpSeg, NewBuffer0),
+            do_flush_ack_seg(Kcp, KcpSeg, NewAckList, NewBuffer);
         {empty, AckList} ->
             NewKcp = Kcp#kcp{acklist = AckList},
             {NewKcp, NewBuffer0}
@@ -618,24 +612,22 @@ probe_win_size(Kcp) ->
     Kcp#kcp{ts_probe = 0, probe_wait = 0}.
 
 %% 刷新并发送探测窗口指令
-flush_probe_win(Kcp = #kcp{probe = Probe}, KcpSeq, Buffer) ->
-    NewBuffer0 =
-        case Probe band ?KCP_ASK_SEND =:= 1 of
+flush_probe_win(Kcp = #kcp{probe = Probe}, KcpSeg, Buffer) ->
+    NewBuffer1 =
+        case (Probe band ?KCP_ASK_SEND) =:= 1 of
             true ->
                 NewBuffer0 = flush_output(Kcp, Buffer),
-                NewKcpSeq = KcpSeq#kcpseq{cmd = ?KCP_CMD_WASK},
-                add_buffer(NewKcpSeq, NewBuffer0);
+                add_buffer(KcpSeg#kcpseg{cmd = ?KCP_CMD_WASK}, NewBuffer0);
             _ ->
                 Buffer
         end,
     NewBuffer =
-        case Probe band ?KCP_ASK_TELL =:= 1 of
+        case (Probe band ?KCP_ASK_TELL) =:= 1 of
             true ->
-                NewBuffer1 = flush_output(Kcp, NewBuffer0),
-                NewKcpSeq = KcpSeq#kcpseq{cmd = ?KCP_CMD_WINS},
-                add_buffer(NewKcpSeq, NewBuffer1);
+                NewBuffer2 = flush_output(Kcp, NewBuffer1),
+                add_buffer(KcpSeg#kcpseg{cmd = ?KCP_CMD_WINS}, NewBuffer2);
             _ ->
-                NewBuffer0
+                NewBuffer1
         end,
     NewKcp = Kcp#kcp{probe = 0},
     {NewKcp, NewBuffer}.
@@ -643,9 +635,9 @@ flush_probe_win(Kcp = #kcp{probe = Probe}, KcpSeq, Buffer) ->
 %% 将snd_queue数据移到snd_buf
 move_to_snd_buf(Kcp = #kcp{snd_queue = SndQueue, snd_buf = SndBuf, nsnd_que = NSndQue, nsnd_buf = NSndBuf, snd_nxt = SndNxt, snd_una = SndUna, current = Current, rcv_nxt = RcvNxt, rx_rto = RxRto}, CWnd) when ?_TIME_DIFF(SndNxt, SndUna + CWnd) < 0 ->
     case queue:out(SndQueue) of
-        {{value, KcpSeq}, NewSndQueue} ->
-            NewKcpSeq = KcpSeq#kcpseq{cmd = ?KCP_CMD_PUSH, ts = Current, sn = SndNxt, una = RcvNxt, resendts = Current, rto = RxRto, fastack = 0, xmit = 0},
-            NewSndBuf = queue:in(NewKcpSeq, SndBuf),
+        {{value, KcpSeg}, NewSndQueue} ->
+            NewKcpSeg = KcpSeg#kcpseg{cmd = ?KCP_CMD_PUSH, ts = Current, sn = SndNxt, una = RcvNxt, resendts = Current, rto = RxRto, fastack = 0, xmit = 0},
+            NewSndBuf = queue:in(NewKcpSeg, SndBuf),
             NewKcp = Kcp#kcp{snd_queue = NewSndQueue, snd_buf = NewSndBuf, nsnd_que = NSndQue - 1, nsnd_buf = NSndBuf + 1, snd_nxt = SndNxt + 1},
             move_to_snd_buf(NewKcp, CWnd);
         {empty, SndQueue} ->
@@ -655,14 +647,14 @@ move_to_snd_buf(Kcp, _CWnd) ->
     Kcp.
 
 %% 刷新并发送数据报文段
-flush_data_seq(Kcp = #kcp{snd_buf = SndBuf, rx_rto = RxRto, current = Current, nodelay = NoDelay, xmit = KcpXMit, fastlimit = FastLimit, rcv_nxt = RcvNxt, mtu = Mtu, dead_link = DeadLink, state = State}, Resent, RtoMin, Wnd, Change, Lost, RestSeqs, Buffer) ->
+flush_data_seg(Kcp = #kcp{snd_buf = SndBuf, rx_rto = RxRto, current = Current, nodelay = NoDelay, xmit = KcpXMit, fastlimit = FastLimit, rcv_nxt = RcvNxt, dead_link = DeadLink, state = State}, Resent, RtoMin, Wnd, Change, Lost, RestSegs, Buffer) ->
     case queue:out(SndBuf) of
-        {{value, KcpSeq = #kcpseq{xmit = XMit, resendts = ResendTs, rto = Rto, fastack = FastAck}}, NewSndBuf} ->
-            {NeedSend, NewKcpSeq, NewKcp, NewChange, NewLost} =
+        {{value, KcpSeg = #kcpseg{xmit = XMit, resendts = ResendTs, rto = Rto, fastack = FastAck}}, NewSndBuf} ->
+            {NeedSend, NewKcpSeg, NewKcp, NewChange, NewLost} =
                 if
                     XMit =:= 0 -> %% 第一次发送
-                        NewKcpSeq0 = KcpSeq#kcpseq{xmit = 1, rto = RxRto, resendts = Current + RxRto + RtoMin},
-                        {true, NewKcpSeq0, Kcp, Change, Lost};
+                        NewKcpSeg0 = KcpSeg#kcpseg{xmit = 1, rto = RxRto, resendts = Current + RxRto + RtoMin},
+                        {true, NewKcpSeg0, Kcp, Change, Lost};
                     ?_TIME_DIFF(Current, ResendTs) >= 0 -> %% 重传时间到
                         NewRto =
                             case NoDelay =:= 0 of
@@ -672,27 +664,27 @@ flush_data_seq(Kcp = #kcp{snd_buf = SndBuf, rx_rto = RxRto, current = Current, n
                                     Step = ?_IF_TRUE(NoDelay < 2, Rto, RxRto),
                                     Rto + Step div 2
                             end,
-                        NewKcpSeq0 = KcpSeq#kcpseq{xmit = XMit + 1, rto = NewRto, resendts = Current + NewRto},
+                        NewKcpSeg0 = KcpSeg#kcpseg{xmit = XMit + 1, rto = NewRto, resendts = Current + NewRto},
                         NewKcp0 = Kcp#kcp{xmit = KcpXMit + 1},
-                        {true, NewKcpSeq0, NewKcp0, Change, 1};
+                        {true, NewKcpSeg0, NewKcp0, Change, 1};
                     FastAck >= Resent andalso (XMit =< FastLimit orelse FastLimit =< 0) -> %% 失序次数达到需要重传的次数，并且已重传次数没有达到上限
-                        NewKcpSeq0 = KcpSeq#kcpseq{xmit = XMit + 1, fastack = 0, resendts = Current + RxRto},
-                        {true, NewKcpSeq0, Kcp, Change + 1, Lost};
+                        NewKcpSeg0 = KcpSeg#kcpseg{xmit = XMit + 1, fastack = 0, resendts = Current + RxRto},
+                        {true, NewKcpSeg0, Kcp, Change + 1, Lost};
                     true ->
-                        {false, KcpSeq, Kcp, Change, Lost}
+                        {false, KcpSeg, Kcp, Change, Lost}
                 end,
             case NeedSend of
                 true ->
-                    SendKcpSeq = #kcpseq{xmit = SendXMit} = NewKcpSeq#kcpseq{ts = Current, wnd = Wnd, una = RcvNxt},
-                    NewBuffer0 = flush_data_output(NewKcp, seq_size(SendKcpSeq), Buffer),
-                    NewBuffer = add_buffer(SendKcpSeq, NewBuffer0),
+                    SendKcpSeg = #kcpseg{xmit = SendXMit} = NewKcpSeg#kcpseg{ts = Current, wnd = Wnd, una = RcvNxt},
+                    NewBuffer0 = flush_data_output(NewKcp, seg_size(SendKcpSeg), Buffer),
+                    NewBuffer = add_buffer(SendKcpSeg, NewBuffer0),
                     NewState = ?_IF_TRUE(SendXMit >= DeadLink, -1, State),
-                    flush_data_seq(NewKcp#kcp{snd_buf = NewSndBuf, state = NewState}, Resent, RtoMin, Wnd, NewChange, NewLost, RestSeqs, NewBuffer);
+                    flush_data_seg(NewKcp#kcp{snd_buf = NewSndBuf, state = NewState}, Resent, RtoMin, Wnd, NewChange, NewLost, RestSegs, NewBuffer);
                 _ ->
-                    flush_data_seq(NewKcp#kcp{snd_buf = NewSndBuf}, Resent, RtoMin, Wnd, NewChange, NewLost, [NewKcpSeq | RestSeqs], Buffer)
+                    flush_data_seg(NewKcp#kcp{snd_buf = NewSndBuf}, Resent, RtoMin, Wnd, NewChange, NewLost, [NewKcpSeg | RestSegs], Buffer)
             end;
         {empty, SndBuf} ->
-            NewKcp = Kcp#kcp{snd_buf = {RestSeqs, []}},
+            NewKcp = Kcp#kcp{snd_buf = {RestSegs, []}},
             output(NewKcp, Buffer),
             {NewKcp, Change, Lost}
     end.
@@ -726,10 +718,10 @@ flush_output(_Kcp, Buffer) ->
     Buffer.
 
 %% 刷新发送数据
-flush_data_output(Kcp = #kcp{mtu = Mtu}, SeqSize, Buffer) when byte_size(Buffer) + SeqSize > Mtu ->
+flush_data_output(Kcp = #kcp{mtu = Mtu}, SegSize, Buffer) when byte_size(Buffer) + SegSize > Mtu ->
     output(Kcp, Buffer),
     <<>>;
-flush_data_output(_Kcp, _SeqSize, Buffer) ->
+flush_data_output(_Kcp, _SegSize, Buffer) ->
     Buffer.
 
 %% 剩余接收窗口大小
@@ -739,36 +731,20 @@ wnd_unused(#kcp{}) ->
     0.
 
 %% kcp报文段转二进制
-seq_to_bin(#kcpseq{conv = Conv, cmd = Cmd, frg = Frg, wnd = Wnd, ts = Ts, sn = Sn, una = Una, len = Len, data = Data}) ->
+seg_to_bin(#kcpseg{conv = Conv, cmd = Cmd, frg = Frg, wnd = Wnd, ts = Ts, sn = Sn, una = Una, len = Len, data = Data}) ->
     <<Conv:32, Cmd:8, Frg:8, Wnd:16, Ts:32, Sn:32, Una:32, Len:32, Data/binary>>.
 
 %% 二进制转kcp报文段
-bin_to_seq(<<Conv:32, Cmd:8, Frg:8, Wnd:16, Ts:32, Sn:32, Una:32, Len:32, Data:Len/binary, RestBin/binary>>) ->
-    KcpSeq = #kcpseq{conv = Conv, cmd = Cmd, frg = Frg, wnd = Wnd, ts = Ts, sn = Sn, una = Una, len = Len, data = Data},
-    {ok, KcpSeq, RestBin};
-bin_to_seq(_Bin) ->
+bin_to_seg(<<Conv:32, Cmd:8, Frg:8, Wnd:16, Ts:32, Sn:32, Una:32, Len:32, Data:Len/binary, RestBin/binary>>) ->
+    KcpSeg = #kcpseg{conv = Conv, cmd = Cmd, frg = Frg, wnd = Wnd, ts = Ts, sn = Sn, una = Una, len = Len, data = Data},
+    {ok, KcpSeg, RestBin};
+bin_to_seg(_Bin) ->
     {error, bad_kcp_packet}.
 
 %% kcp报文段大小
-seq_size(#kcpseq{len = Len}) ->
+seg_size(#kcpseg{len = Len}) ->
     ?KCP_OVERHEAD + Len.
 
 %% kcp报文段添加到buffer
-add_buffer(KcpSeq, Buffer) ->
-    <<Buffer/binary, (seq_to_bin(KcpSeq))/binary>>.
-
-%% 队列根据键查找一项，并返回新队列
-qkeytake(_Key, _Pos, {[], []}) ->
-    false;
-qkeytake(Key, Pos, {In, Out}) ->
-    case lists:keytake(Key, Pos, In) of
-        false ->
-            case lists:keytake(Key, Pos, Out) of
-                false ->
-                    false;
-                {value, Tuple, NewOut} ->
-                    {value, Tuple, {In, NewOut}}
-            end;
-        {value, Tuple, NewIn} ->
-            {value, Tuple, {NewIn, Out}}
-    end.
+add_buffer(KcpSeg, Buffer) ->
+    <<Buffer/binary, (seg_to_bin(KcpSeg))/binary>>.
