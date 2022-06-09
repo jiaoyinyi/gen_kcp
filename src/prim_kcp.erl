@@ -160,20 +160,24 @@ merge_fragment(Kcp = #kcp{rcv_queue = RcvQueue, nrcv_que = NRcvQue}, Buffer) ->
             {Kcp, Buffer}
     end.
 
+%% @doc 获取参数 TODO 未实现
 -spec getopts(#kcp{}, list()) -> {ok, [{atom(), term()}]} | {error, term()}.
 getopts(_Kcp, _Opts) ->
     todo.
 
+%% @doc 设置参数 TODO 未实现
 -spec setopts(#kcp{}, [{atom(), term()}]) -> ok | {error, term()}.
 setopts(_Kcp, _Opts) ->
     todo.
 
+%% @doc 底层协议发送数据
 -spec output(#kcp{}, binary()) -> ok | {error, term()}.
 output(_Kcp, <<>>) ->
     ok;
 output(#kcp{socket = Socket}, Data) ->
     gen_udp:send(Socket, Data).
 
+%% @doc 底层协议接收数据
 -spec input(#kcp{}, binary()) -> {ok, #kcp{}} | {error, term()}.
 input(_Kcp, <<>>) ->
     {error, kcp_data_empty}; %% 下层协议输入的数据是空的
@@ -396,7 +400,7 @@ update_cwnd(Kcp = #kcp{snd_una = SndUna, cwnd = CWnd, rmt_wnd = RmtWnd, mss = Ms
 update_cwnd(Kcp, _PrevUna) ->
     Kcp.
 
-%% kcp定时更新
+%% @doc kcp定时更新
 -spec update(#kcp{}, pos_integer()) -> #kcp{}.
 update(Kcp = #kcp{updated = Updated, ts_flush = TsFlush, interval = Interval}, Current0) ->
     Current = ?_UINT32(Current0),
@@ -434,6 +438,7 @@ update(Kcp = #kcp{updated = Updated, ts_flush = TsFlush, interval = Interval}, C
             NewKcp
     end.
 
+%% @doc 计算下一次更新的时间
 -spec check(#kcp{}, pos_integer()) -> pos_integer().
 check(#kcp{updated = 0}, _Current0) ->
     0;
@@ -506,7 +511,6 @@ flush(Kcp = #kcp{updated = 0}) -> %% 没有调用update方法不给执行
     Kcp.
 
 %% 刷新并发送ack协议报
--spec flush_ack_seg(#kcp{}, #kcpseg{}, binary()) -> {#kcp{}, binary()}.
 flush_ack_seg(Kcp = #kcp{acklist = AckList}, KcpSeg, Buffer) ->
     do_flush_ack_seg(Kcp, KcpSeg, AckList, Buffer).
 do_flush_ack_seg(Kcp, KcpSeg, AckList, Buffer) ->
