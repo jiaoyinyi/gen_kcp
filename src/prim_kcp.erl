@@ -22,7 +22,7 @@
     , input/2
 ]).
 
--include("gen_kcp.hrl").
+-include("kcp.hrl").
 
 %% @doc 创建kcp
 -spec create(pos_integer(), inet:socket()) -> #kcp{}.

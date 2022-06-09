@@ -18,7 +18,7 @@
 
 -define(SERVER, ?MODULE).
 
--include("gen_kcp.hrl").
+-include("kcp.hrl").
 
 send(Bin) ->
     gen_server:call(?SERVER, {send, Bin}).
