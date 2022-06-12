@@ -62,7 +62,7 @@ create(Conv, Socket) ->
         , current = 0
         , interval = ?KCP_INTERVAL
         , ts_flush = ?KCP_INTERVAL
-        , nodelay = 1 %% 默认快速重传
+        , nodelay = 0
         , updated = 0
         , ssthresh = ?KCP_THRESH_INIT
         , fastresend = 0
@@ -160,15 +160,84 @@ merge_fragment(Kcp = #kcp{rcv_queue = RcvQueue, nrcv_que = NRcvQue}, Buffer) ->
             {Kcp, Buffer}
     end.
 
-%% @doc 获取参数 TODO 未实现
+%% @doc 获取参数
 -spec getopts(#kcp{}, list()) -> {ok, [{atom(), term()}]} | {error, term()}.
-getopts(_Kcp, _Opts) ->
-    todo.
+getopts(Kcp, Opts) ->
+    do_getopts(Kcp, Opts, []).
 
-%% @doc 设置参数 TODO 未实现
+do_getopts(_Kcp, [], Rets) ->
+    {ok, Rets};
+do_getopts(Kcp, [Opt | Opts], Rets) ->
+    case do_getopts(Kcp, Opt) of
+        {ok, Val} ->
+            do_getopts(Kcp, Opts, [{Opt, Val} | Rets]);
+        {error, Reason} ->
+            {error, Reason}
+    end.
+do_getopts(#kcp{nsnd_buf = NSndBuf, nsnd_que = NsndQue}, waitsnd) -> %% 待发送数据长度
+    WaitSnd = NSndBuf + NsndQue,
+    {ok, WaitSnd};
+do_getopts(#kcp{nodelay = NoDelay}, nodelay) -> %% 是否启用 nodelay模式
+    {ok, NoDelay};
+do_getopts(#kcp{interval = Interval}, interval) -> %% 协议内部工作的 interval
+    {ok, Interval};
+do_getopts(#kcp{fastresend = FastResend}, fastresend) -> %% 快速重传模式
+    {ok, FastResend};
+do_getopts(#kcp{nocwnd = NoCWnd}, nocwnd) -> %% 是否关闭流控
+    {ok, NoCWnd};
+do_getopts(#kcp{snd_wnd = SndWnd}, snd_wnd) -> %% 最大发送窗口
+    {ok, SndWnd};
+do_getopts(#kcp{rcv_wnd = RcvWnd}, rcv_wnd) -> %% 最大接收窗口
+    {ok, RcvWnd};
+do_getopts(#kcp{mtu = Mtu}, mtu) -> %% MTU
+    {ok, Mtu};
+do_getopts(#kcp{rx_minrto = RxMinRto}, minrto) -> %% 最小rto
+    {ok, RxMinRto};
+do_getopts(_Kcp, Opt) ->
+    {error, {unknown_opt, Opt}}.
+
+%% @doc 设置参数
 -spec setopts(#kcp{}, [{atom(), term()}]) -> ok | {error, term()}.
-setopts(_Kcp, _Opts) ->
-    todo.
+setopts(Kcp, []) ->
+    {ok, Kcp};
+setopts(Kcp, [Opt | Opts]) ->
+    case setopts(Kcp, Opt) of
+        {ok, NewKcp} ->
+            setopts(NewKcp, Opts);
+        {error, Reason} ->
+            {error, Reason}
+    end;
+setopts(Kcp, {nodelay, NoDelay}) when is_integer(NoDelay) andalso NoDelay >= 0 -> %% 是否启用 nodelay模式，0不启用；1启用。
+    RxMinRto = ?_IF_TRUE(NoDelay > 0, ?KCP_RTO_NDL, ?KCP_RTO_MIN),
+    NewKcp = Kcp#kcp{nodelay = NoDelay, rx_minrto = RxMinRto},
+    {ok, NewKcp};
+setopts(Kcp, {interval, Interval}) when is_integer(Interval) andalso Interval >= 0 -> %% 协议内部工作的 interval，单位毫秒。
+    NewInterval = min(max(5, Interval), 5000),
+    NewKcp = Kcp#kcp{interval = NewInterval},
+    {ok, NewKcp};
+setopts(Kcp, {fastresend, FastResend}) when is_integer(FastResend) andalso FastResend >= 0 -> %% 快速重传模式，默认0关闭，可以设置2（2次ACK跨越将会直接重传）。
+    NewKcp = Kcp#kcp{fastresend = FastResend},
+    {ok, NewKcp};
+setopts(Kcp, {nocwnd, NoCWnd}) when is_integer(NoCWnd) andalso NoCWnd >= 0 -> %% 是否关闭流控，默认是0代表不关闭，1代表关闭。
+    NewKcp = Kcp#kcp{nocwnd = NoCWnd},
+    {ok, NewKcp};
+setopts(Kcp, {snd_wnd, SndWnd}) when is_integer(SndWnd) andalso SndWnd > 0 -> %% 最大发送窗口，默认为32，单位是包。
+    NewKcp = Kcp#kcp{snd_wnd = SndWnd},
+    {ok, NewKcp};
+setopts(Kcp, {rcv_wnd, RcvWnd}) when is_integer(RcvWnd) andalso RcvWnd > 0 -> %% 最大接收窗口，默认为32，单位是包。
+    NewKcp = Kcp#kcp{rcv_wnd = max(RcvWnd, ?KCP_WND_RCV)},
+    {ok, NewKcp};
+setopts(Kcp, {mtu, Mtu}) when is_integer(Mtu) andalso Mtu > 0 -> %% 默认 mtu是1400字节，该值将会影响数据包归并及分片时候的最大传输单元。
+    NewMtu = max(50, min(Mtu, ?KCP_MTU_DEF)),
+    NewKcp = Kcp#kcp{mtu = NewMtu, mss = NewMtu - ?KCP_OVERHEAD},
+    {ok, NewKcp};
+setopts(Kcp, {minrto, MinRto}) when is_integer(MinRto) andalso MinRto > 0 -> %% 最小 RTO的限制
+    NewMinRto = max(10, min(MinRto, ?KCP_RTO_MAX)),
+    NewKcp = Kcp#kcp{rx_minrto = NewMinRto},
+    {ok, NewKcp};
+setopts(_Kcp, Opt) ->
+    {error, {unknown_opt, Opt}}.
+
 
 %% @doc 底层协议发送数据
 -spec output(#kcp{}, binary()) -> ok | {error, term()}.
