@@ -49,9 +49,6 @@
 -define(KCP_PROBE_LIMIT, 120000).
 -define(KCP_FASTACK_LIMIT, 5).
 
--define(_BIT32_ONE, 16#ffffffff).
--define(_UINT32(Int), (Int band ?_BIT32_ONE)).
--define(_TIME_DIFF(Later, Earlier), ?_UINT32(Later) - ?_UINT32(Earlier)).
 -define(_IF_TRUE(If, True, False), case If of true -> True; _ -> False end).
 
 %% kcp结构
