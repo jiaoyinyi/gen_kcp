@@ -69,7 +69,8 @@
     , fastresend                               %% fastresend: ACK 失序 fastresend 次时触发快速重传
     , fastlimit                                %% fastlimit: 传输次数小于 fastlimit 的报文才会执行快速重传
     , nocwnd                                   %% nocwnd: 是否不考虑拥塞窗口
-    , socket
+    , output
+    , user
 }).
 
 %% kcp报文段
@@ -87,4 +88,20 @@
     , rto = 0                  %% 重传超时时间。数据发送时刻算起，超过这个时间便执行重传
     , fastack = 0              %% ACK 失序次数
     , xmit = 0                 %% 该报文传输的次数
+}).
+
+%% gen_kcp结构
+-record(gen_kcp, {
+    socket                                     %% udp socket
+    , kcp                                      %% kcp结构
+    , is_connected                             %% 是否已连接
+    , recv_refs                                %% 接收引用队列
+}).
+
+%% gen_kcp 引用结构
+-record(gen_kcp_ref, {
+    pid
+    , ref
+    , mref
+    , timer_ref
 }).

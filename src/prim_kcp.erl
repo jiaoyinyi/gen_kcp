@@ -11,7 +11,7 @@
 
 %% API
 -export([
-    create/2
+    create/3
     , send/2
     , recv/1
     , update/2
@@ -25,8 +25,8 @@
 -include("kcp.hrl").
 
 %% @doc 创建kcp
--spec create(pos_integer(), inet:socket()) -> #kcp{}.
-create(Conv, Socket) ->
+-spec create(pos_integer(), term(), {atom(), atom(), list()}) -> #kcp{}.
+create(Conv, User, Output = {M, F, A}) when is_atom(M) andalso is_atom(F) andalso is_list(A) ->
     #kcp{
         conv = Conv
         , snd_una = 0
@@ -70,7 +70,8 @@ create(Conv, Socket) ->
         , nocwnd = 0
         , xmit = 0
         , dead_link = ?KCP_DEADLINK
-        , socket = Socket
+        , output = Output
+        , user = User
     }.
 
 %% @doc kcp发送数据
@@ -85,7 +86,9 @@ send(Kcp = #kcp{mss = Mss}, Data) when is_binary(Data) ->
         _ ->
             NewKcp = send_add_seg(Kcp, 1, Count, Data),
             {ok, NewKcp}
-    end.
+    end;
+send(_Kcp, _Data) ->
+    {error, bad_packet}.
 
 %% 发送数据时添加分片
 send_add_seg(Kcp = #kcp{conv = Conv, mss = Mss, snd_queue = SndQueue, nsnd_que = NSndQue}, Idx, Count, Bin) when Idx < Count ->
@@ -193,11 +196,13 @@ do_getopts(#kcp{mtu = Mtu}, mtu) -> %% MTU
     {ok, Mtu};
 do_getopts(#kcp{rx_minrto = RxMinRto}, minrto) -> %% 最小rto
     {ok, RxMinRto};
+do_getopts(#kcp{output = Output}, output) -> %% output回调方法
+    {ok, Output};
 do_getopts(_Kcp, Opt) ->
     {error, {unknown_opt, Opt}}.
 
 %% @doc 设置参数
--spec setopts(#kcp{}, [{atom(), term()}]) -> ok | {error, term()}.
+-spec setopts(#kcp{}, [{atom(), term()}]) -> {ok, #kcp{}} | {error, term()}.
 setopts(Kcp, []) ->
     {ok, Kcp};
 setopts(Kcp, [Opt | Opts]) ->
@@ -235,16 +240,18 @@ setopts(Kcp, {minrto, MinRto}) when is_integer(MinRto) andalso MinRto > 0 -> %% 
     NewMinRto = max(10, min(MinRto, ?KCP_RTO_MAX)),
     NewKcp = Kcp#kcp{rx_minrto = NewMinRto},
     {ok, NewKcp};
+setopts(Kcp, {output, Output = {M, F, A}}) when is_atom(M) andalso is_atom(F) andalso is_list(A) -> %% output回调方法
+    NewKcp = Kcp#kcp{output = Output},
+    {ok, NewKcp};
 setopts(_Kcp, Opt) ->
     {error, {unknown_opt, Opt}}.
-
 
 %% @doc 底层协议发送数据
 -spec output(#kcp{}, binary()) -> ok | {error, term()}.
 output(_Kcp, <<>>) ->
     ok;
-output(#kcp{socket = Socket}, Data) ->
-    gen_udp:send(Socket, Data).
+output(#kcp{output = {Mod, Func, Args}, user = User}, Data) ->
+    erlang:apply(Mod, Func, [User, Data | Args]).
 
 %% @doc 底层协议接收数据
 -spec input(#kcp{}, binary()) -> {ok, #kcp{}} | {error, term()}.
