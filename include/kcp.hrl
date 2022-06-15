@@ -95,7 +95,7 @@
     socket                                     %% udp socket
     , kcp                                      %% kcp结构
     , is_connected                             %% 是否已连接
-    , recv_refs                                %% 接收引用队列
+    , recv_ref                                 %% 接收引用
 }).
 
 %% gen_kcp 引用结构

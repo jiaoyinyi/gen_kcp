@@ -14,8 +14,8 @@
     open/2, open/4
     , close/1
     , connect/3
-    , send/2, send/3
-    , async_send/2, async_send/3
+    , send/2
+    , async_send/2
     , recv/1, recv/2
     , async_recv/1, async_recv/2
     , getopts/2
@@ -58,10 +58,7 @@ connect(Pid, Ip, Port) ->
 %% @doc 阻塞式发送数据
 -spec send(pid(), binary()) -> ok | {error, term()}.
 send(Pid, Packet) ->
-    send(Pid, Packet, infinity).
--spec send(pid(), binary(), timeout()) -> ok | {error, term()}.
-send(Pid, Packet, Timeout) when ?_IS_TIMEOUT(Timeout) ->
-    case async_send(Pid, Packet, Timeout) of
+    case async_send(Pid, Packet) of
         {ok, Ref} ->
             receive
                 {kcp_reply, Pid, Ref, Status} ->
@@ -76,10 +73,7 @@ send(Pid, Packet, Timeout) when ?_IS_TIMEOUT(Timeout) ->
 %% @doc 非阻塞式发送数据 异步消息 {kcp_reply, pid(), reference(), ok | {error, reason()}}
 -spec async_send(pid(), binary()) -> {ok, reference()} | {error, term()}.
 async_send(Pid, Packet) ->
-    async_send(Pid, Packet, infinity).
--spec async_send(pid(), binary(), timeout()) -> {ok, reference()} | {error, term()}.
-async_send(Pid, Packet, Timeout) when ?_IS_TIMEOUT(Timeout) ->
-    call(Pid, {async_send, Packet, Timeout}, infinity).
+    call(Pid, {async_send, Packet}, infinity).
 
 %% @doc 阻塞式接收数据
 -spec recv(pid()) -> {ok, binary()} | {error, term()}.
@@ -156,7 +150,7 @@ init([Port, Conv, UdpOpts, KcpOpts]) ->
             Kcp = prim_kcp:create(Conv, Socket, {?MODULE, output, [false]}),
             case prim_kcp:setopts(Kcp, KcpOpts) of
                 {ok, NewKcp} ->
-                    State = #gen_kcp{socket = Socket, kcp = NewKcp, is_connected = false, recv_refs = queue:new()},
+                    State = #gen_kcp{socket = Socket, kcp = NewKcp, is_connected = false},
                     self() ! kcp_update,
                     {ok, State};
                 {error, Reason} ->
@@ -168,7 +162,7 @@ init([Port, Conv, UdpOpts, KcpOpts]) ->
 
 %% 关闭socket
 handle_call(close, _From, State = #gen_kcp{socket = Socket}) ->
-    catch gen_udp:close(Socket),
+    gen_udp:close(Socket),
     {stop, normal, ok, State};
 
 %% 连接，与对端ip、端口绑定
@@ -183,11 +177,11 @@ handle_call({connect, Ip, Port}, _From, State = #gen_kcp{socket = Socket, kcp = 
     end;
 
 %% 异步发送数据
-handle_call({async_send, _Packet, _Timeout}, _From, State = #gen_kcp{is_connected = false}) ->
+handle_call({async_send, _Packet}, _From, State = #gen_kcp{is_connected = false}) ->
     {reply, {error, disconnect}, State};
-handle_call({async_send, Packet, _Timeout}, _From, State) when not is_binary(Packet) ->
+handle_call({async_send, Packet}, _From, State) when not is_binary(Packet) ->
     {reply, {error, bad_packet}, State};
-handle_call({async_send, Packet, _Timeout}, From = {Pid, _}, State = #gen_kcp{kcp = Kcp}) ->
+handle_call({async_send, Packet}, From = {Pid, _}, State = #gen_kcp{kcp = Kcp}) ->
     Ref = erlang:make_ref(),
     gen_server:reply(From, {ok, Ref}),
     case prim_kcp:send(Kcp, Packet) of %% TODO 限制发送数量
@@ -203,22 +197,21 @@ handle_call({async_send, Packet, _Timeout}, From = {Pid, _}, State = #gen_kcp{kc
 %% 异步接收数据
 handle_call({async_recv, _Timeout}, _From, State = #gen_kcp{is_connected = false}) ->
     {reply, {error, disconnect}, State};
-handle_call({async_recv, Timeout}, From = {Pid, _}, State = #gen_kcp{kcp = Kcp, recv_refs = RecRefs}) ->
+handle_call({async_recv, _Timeout}, _From, State = #gen_kcp{recv_ref = RecvRef}) when RecvRef =/= undefined ->
+    {reply, {error, ealready}, State};
+handle_call({async_recv, Timeout}, From = {Pid, _}, State = #gen_kcp{kcp = Kcp}) ->
     Ref = erlang:make_ref(),
     gen_server:reply(From, {ok, Ref}),
-    case queue:is_empty(RecRefs) of
-        true ->
-            case prim_kcp:recv(Kcp) of %% TODO 限制接收数量
-                {ok, NewKcp, Packet} ->
-                    Pid ! {kcp, self(), Ref, {ok, Packet}},
-                    NewState = State#gen_kcp{kcp = NewKcp},
-                    {noreply, NewState};
-                _ ->
-                    NewState = recv_wait(State, Pid, Ref, Timeout),
-                    {noreply, NewState}
-            end;
+    case prim_kcp:recv(Kcp) of
+        {ok, NewKcp, Packet} ->
+            Pid ! {kcp, self(), Ref, {ok, Packet}},
+            NewState = State#gen_kcp{kcp = NewKcp},
+            {noreply, NewState};
         _ ->
-            NewState = recv_wait(State, Pid, Ref, Timeout),
+            Mref = erlang:monitor(process, Pid),
+            TimerRef = start_timer(Timeout, recv_timeout),
+            RecvRef = #gen_kcp_ref{pid = Pid, ref = Ref, mref = Mref, timer_ref = TimerRef},
+            NewState = State#gen_kcp{recv_ref = RecvRef},
             {noreply, NewState}
     end;
 
@@ -266,33 +259,23 @@ handle_info({udp, Socket, _Host, _Port, Packet}, State = #gen_kcp{socket = Socke
     end;
 
 %% 接收数据超时
-handle_info({timeout, TimerRef, recv_timeout}, State = #gen_kcp{recv_refs = RecvRefs}) ->
-    case queue_keytake(TimerRef, #gen_kcp_ref.timer_ref, RecvRefs) of
-        {{value, #gen_kcp_ref{pid = Pid, ref = Ref, mref = Mref}}, NewRecvRefs} ->
-            Pid ! {kcp, self(), Ref, {error, timeout}},
-            erlang:demonitor(Mref, [flush]),
-            NewState = State#gen_kcp{recv_refs = NewRecvRefs},
-            {noreply, NewState};
-        false ->
-            {noreply, State}
-    end;
+handle_info({timeout, TimerRef, recv_timeout}, State = #gen_kcp{recv_ref = #gen_kcp_ref{pid = Pid, ref = Ref, mref = Mref, timer_ref = TimerRef}}) ->
+    Pid ! {kcp, self(), Ref, {error, timeout}},
+    erlang:demonitor(Mref, [flush]),
+    NewState = State#gen_kcp{recv_ref = undefined},
+    {noreply, NewState};
 
 %% 监控的进程挂了
-handle_info({'DOWN', Mref, _, _, _Reason}, State = #gen_kcp{recv_refs = RecvRefs}) ->
-    case queue_keytake(Mref, #gen_kcp_ref.mref, RecvRefs) of
-        {{value, #gen_kcp_ref{timer_ref = TimerRef}}, NewRecvRefs} ->
-            cancel_timer(TimerRef),
-            NewState = State#gen_kcp{recv_refs = NewRecvRefs},
-            {noreply, NewState};
-        false ->
-            {noreply, State}
-    end;
+handle_info({'DOWN', Mref, _, _, _Reason}, State = #gen_kcp{recv_ref = #gen_kcp_ref{mref = Mref, timer_ref = TimerRef}}) ->
+    cancel_timer(TimerRef),
+    NewState = State#gen_kcp{recv_ref = undefined},
+    {noreply, NewState};
 
 handle_info(_Info, State) ->
     {noreply, State}.
 
 terminate(_Reason, _State = #gen_kcp{socket = Socket}) ->
-    catch gen_udp:close(Socket),
+    gen_udp:close(Socket),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -324,30 +307,20 @@ get_udp_opts([list | Opts], AccOpts) ->
 get_udp_opts([Opt | Opts], AccOpts) ->
     get_udp_opts(Opts, [Opt | AccOpts]).
 
-%% 接收数据等待
-recv_wait(State = #gen_kcp{recv_refs = RecvRefs}, Pid, Ref, Timeout) ->
-    Mref = erlang:monitor(process, Pid),
-    TimerRef = start_timer(Timeout, recv_timeout),
-    NewRecvRefs = queue:in(#gen_kcp_ref{pid = Pid, ref = Ref, mref = Mref, timer_ref = TimerRef}, RecvRefs),
-    State#gen_kcp{recv_refs = NewRecvRefs}.
-
 %% 接收数据回复
-recv_reply(State = #gen_kcp{kcp = Kcp, recv_refs = RecvRefs}) ->
-    case queue:out(RecvRefs) of
-        {value, #gen_kcp_ref{pid = Pid, ref = Ref, mref = Mref, timer_ref = TimerRef}, NewRecvRefs} ->
-            case prim_kcp:recv(Kcp) of
-                {ok, NewKcp, Packet} ->
-                    Pid ! {kcp, self(), Ref, {ok, Packet}},
-                    erlang:demonitor(Mref, [flush]),
-                    cancel_timer(TimerRef),
-                    NewState = State#gen_kcp{kcp = NewKcp, recv_refs = NewRecvRefs},
-                    recv_reply(NewState);
-                _ ->
-                    State
-            end;
-        {empty, _} ->
+recv_reply(State = #gen_kcp{kcp = Kcp, recv_ref = #gen_kcp_ref{pid = Pid, ref = Ref, mref = Mref, timer_ref = TimerRef}}) ->
+    case prim_kcp:recv(Kcp) of
+        {ok, NewKcp, Packet} ->
+            Pid ! {kcp, self(), Ref, {ok, Packet}},
+            erlang:demonitor(Mref, [flush]),
+            cancel_timer(TimerRef),
+            NewState = State#gen_kcp{kcp = NewKcp, recv_ref = undefined},
+            recv_reply(NewState);
+        _ ->
             State
-    end.
+    end;
+recv_reply(State) ->
+    State.
 
 timestamp() ->
     {S1, S2, S3} = os:timestamp(),
@@ -368,17 +341,4 @@ cancel_timer(Ref) ->
             end;
         Time ->
             Time
-    end.
-
-queue_keytake(Key, Pos, {QueueIn, QueueOut}) ->
-    case lists:keytake(Key, Pos, QueueOut) of
-        false ->
-            case lists:keytake(Key, Pos, QueueIn) of
-                false ->
-                    false;
-                {value, Tuple, NewQueueIn} ->
-                    {{value, Tuple}, {NewQueueIn, QueueOut}}
-            end;
-        {value, Tuple, NewQueueOut} ->
-            {{value, Tuple}, {QueueIn, NewQueueOut}}
     end.

@@ -11,8 +11,8 @@
     open/2, open/4
     , close/1
     , connect/3
-    , send/2, send/3
-    , async_send/2, async_send/3
+    , send/2
+    , async_send/2
     , recv/1, recv/2
     , async_recv/1, async_recv/2
     , getopts/2
@@ -45,18 +45,10 @@ connect(Pid, Ip, Port) ->
 send(Pid, Packet) ->
     gen_kcp:send(Pid, Packet).
 
--spec send(pid(), binary(), timeout()) -> ok | {error, term()}.
-send(Pid, Packet, Timeout) ->
-    gen_kcp:send(Pid, Packet, Timeout).
-
 %% @doc 非阻塞式发送数据 异步消息 {kcp_reply, pid(), reference(), ok | {error, reason()}}
 -spec async_send(pid(), binary()) -> {ok, reference()} | {error, term()}.
 async_send(Pid, Packet) ->
     gen_kcp:async_send(Pid, Packet).
-
--spec async_send(pid(), binary(), timeout()) -> {ok, reference()} | {error, term()}.
-async_send(Pid, Packet, Timeout) ->
-    gen_kcp:async_send(Pid, Packet, Timeout).
 
 %% @doc 阻塞式接收数据
 -spec recv(pid()) -> {ok, binary()} | {error, term()}.
