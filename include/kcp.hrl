@@ -95,6 +95,7 @@
     socket                                     %% udp socket
     , kcp                                      %% kcp结构
     , is_connected                             %% 是否已连接
+    , next_ref                                 %% 下一个请求引用
     , recv_ref                                 %% 接收引用
 }).
 

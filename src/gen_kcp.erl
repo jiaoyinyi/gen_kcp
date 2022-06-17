@@ -150,7 +150,7 @@ init([Port, Conv, UdpOpts, KcpOpts]) ->
             Kcp = prim_kcp:create(Conv, Socket, {?MODULE, output, [false]}),
             case prim_kcp:setopts(Kcp, KcpOpts) of
                 {ok, NewKcp} ->
-                    State = #gen_kcp{socket = Socket, kcp = NewKcp, is_connected = false},
+                    State = #gen_kcp{socket = Socket, kcp = NewKcp, is_connected = false, next_ref = 1},
                     self() ! kcp_update,
                     {ok, State};
                 {error, Reason} ->
@@ -181,17 +181,17 @@ handle_call({async_send, _Packet}, _From, State = #gen_kcp{is_connected = false}
     {reply, {error, disconnect}, State};
 handle_call({async_send, Packet}, _From, State) when not is_binary(Packet) ->
     {reply, {error, bad_packet}, State};
-handle_call({async_send, Packet}, From = {Pid, _}, State = #gen_kcp{kcp = Kcp}) ->
-    Ref = erlang:make_ref(),
+handle_call({async_send, Packet}, From = {Pid, _}, State = #gen_kcp{kcp = Kcp, next_ref = Ref}) ->
     gen_server:reply(From, {ok, Ref}),
     case prim_kcp:send(Kcp, Packet) of %% TODO 限制发送数量
         {ok, NewKcp} ->
             Pid ! {kcp_reply, self(), Ref, ok},
-            NewState = State#gen_kcp{kcp = NewKcp},
+            NewState = State#gen_kcp{kcp = NewKcp, next_ref = Ref + 1},
             {noreply, NewState};
         {error, Reason} ->
             Pid ! {kcp_reply, self(), Ref, {error, Reason}},
-            {noreply, State}
+            NewState = State#gen_kcp{next_ref = Ref + 1},
+            {noreply, NewState}
     end;
 
 %% 异步接收数据
@@ -199,19 +199,18 @@ handle_call({async_recv, _Timeout}, _From, State = #gen_kcp{is_connected = false
     {reply, {error, disconnect}, State};
 handle_call({async_recv, _Timeout}, _From, State = #gen_kcp{recv_ref = RecvRef}) when RecvRef =/= undefined ->
     {reply, {error, ealready}, State};
-handle_call({async_recv, Timeout}, From = {Pid, _}, State = #gen_kcp{kcp = Kcp}) ->
-    Ref = erlang:make_ref(),
+handle_call({async_recv, Timeout}, From = {Pid, _}, State = #gen_kcp{kcp = Kcp, next_ref = Ref}) ->
     gen_server:reply(From, {ok, Ref}),
     case prim_kcp:recv(Kcp) of
         {ok, NewKcp, Packet} ->
             Pid ! {kcp, self(), Ref, {ok, Packet}},
-            NewState = State#gen_kcp{kcp = NewKcp},
+            NewState = State#gen_kcp{kcp = NewKcp, next_ref = Ref + 1},
             {noreply, NewState};
         _ ->
             Mref = erlang:monitor(process, Pid),
             TimerRef = start_timer(Timeout, recv_timeout),
             RecvRef = #gen_kcp_ref{pid = Pid, ref = Ref, mref = Mref, timer_ref = TimerRef},
-            NewState = State#gen_kcp{recv_ref = RecvRef},
+            NewState = State#gen_kcp{next_ref = Ref + 1, recv_ref = RecvRef},
             {noreply, NewState}
     end;
 
@@ -314,8 +313,7 @@ recv_reply(State = #gen_kcp{kcp = Kcp, recv_ref = #gen_kcp_ref{pid = Pid, ref = 
             Pid ! {kcp, self(), Ref, {ok, Packet}},
             erlang:demonitor(Mref, [flush]),
             cancel_timer(TimerRef),
-            NewState = State#gen_kcp{kcp = NewKcp, recv_ref = undefined},
-            recv_reply(NewState);
+            State#gen_kcp{kcp = NewKcp, recv_ref = undefined};
         _ ->
             State
     end;
