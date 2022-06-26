@@ -4,29 +4,30 @@
 %%% @doc
 %%% @end
 %%%-------------------------------------------------------------------
--module(tcp_server).
+-module(t_kcp_server).
 
 -behaviour(gen_server).
 
--export([start_link/0]).
+-export([start/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
     code_change/3]).
 
 -define(SERVER, ?MODULE).
 
--record(state, {lsocket}).
+-record(state, {socket}).
 
 %%%===================================================================
 %%% Spawning and gen_server implementation
 %%%===================================================================
 
-start_link() ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+start(KcpOpts) ->
+    gen_server:start(?MODULE, [KcpOpts], []).
 
-init([]) ->
-    {ok, LSocket} = gen_tcp:listen(40001, [{ip, {127,0,0,1}}, {active, false}, binary, {packet, 0}]),
-    self() ! accept,
-    {ok, #state{lsocket = LSocket}}.
+init([KcpOpts]) ->
+    {ok, Socket} = gen_kcp:open(30001, 1, [{ip, {192, 168, 31, 235}}], KcpOpts),
+    ok = gen_kcp:connect(Socket, {192, 168, 31, 235}, 30002),
+    self() ! recv,
+    {ok, #state{socket = Socket}}.
 
 handle_call(_Request, _From, State = #state{}) ->
     {reply, ok, State}.
@@ -34,22 +35,20 @@ handle_call(_Request, _From, State = #state{}) ->
 handle_cast(_Request, State = #state{}) ->
     {noreply, State}.
 
-handle_info(accept, State = #state{lsocket = LSocket}) ->
-    case gen_tcp:accept(LSocket) of
-        {ok, Socket} ->
-            {ok, Pid} = tcp_proc:start(Socket),
-            ok = gen_tcp:controlling_process(Socket, Pid),
-            self() ! accept,
-            {noreply, State};
-        {error, Reason} ->
-            {stop, Reason, State}
-    end;
+handle_info(recv, State = #state{socket = Socket}) ->
+    {ok, _Ref} = gen_kcp:async_recv(Socket),
+    {noreply, State};
+
+handle_info({kcp, _S, _Ref, {ok, Packet}}, State = #state{socket = Socket}) ->
+    ok = gen_kcp:send(Socket, Packet),
+    self() ! recv,
+    {noreply, State};
 
 handle_info(_Info, State = #state{}) ->
+    io:format("接收到其他消息：~w~n", [_Info]),
     {noreply, State}.
 
-terminate(_Reason, _State = #state{lsocket = LSocket}) ->
-    gen_tcp:close(LSocket),
+terminate(_Reason, _State = #state{}) ->
     ok.
 
 code_change(_OldVsn, State = #state{}, _Extra) ->

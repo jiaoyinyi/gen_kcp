@@ -4,14 +4,9 @@
 %%% @doc
 %%% @end
 %%%-------------------------------------------------------------------
--module(tcp_proc).
+-module(t_tcp_proc).
 
 -behaviour(gen_server).
-
--export([
-    async_recv/3
-    , async_send/2
-]).
 
 -export([start/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
@@ -21,48 +16,40 @@
 
 -record(state, {socket}).
 
-async_recv(Pid, Len, Timeout) ->
-    gen_server:call(Pid, {async_recv, Len, Timeout}).
-
-async_send(Pid, Packet) ->
-    gen_server:call(Pid, {async_send, Packet}).
-
 %%%===================================================================
 %%% Spawning and gen_server implementation
 %%%===================================================================
 
 start(Socket) ->
-    gen_server:start(?MODULE, [Socket], []).
+    gen_server:start_link(?MODULE, [Socket], []).
 
 init([Socket]) ->
     process_flag(trap_exit, true),
-    inet:setopts(Socket, [{active, false}, binary, {packet, 0}]),
     {ok, #state{socket = Socket}}.
-
-handle_call({async_recv, Len, Timeout}, _From, State = #state{socket = Socket}) ->
-    Ret = prim_inet:async_recv(Socket, Len, Timeout),
-    {reply, Ret, State};
-
-handle_call({async_send, Packet}, _From, State = #state{socket = Socket}) ->
-    Ret =
-        try
-            erlang:port_command(Socket, Packet, [])
-        of
-            false -> % Port busy and nosuspend option passed
-                {error, busy};
-            true ->
-                ok
-        catch
-            error:_Error ->
-                {error, einval}
-        end,
-    {reply, Ret, State};
 
 handle_call(_Request, _From, State = #state{}) ->
     {reply, ok, State}.
 
 handle_cast(_Request, State = #state{}) ->
     {noreply, State}.
+
+handle_info(init, State) ->
+    self() ! recv,
+    {noreply, State};
+
+handle_info(recv, State = #state{socket = Socket}) ->
+    {ok, _Ref} = prim_inet:async_recv(Socket, 4, -1),
+    {noreply, State};
+
+handle_info({inet_async, _S, _Ref, {ok, <<Len:32>>}}, State = #state{socket = Socket}) ->
+    {ok, _} = prim_inet:async_recv(Socket, Len, -1),
+    {noreply, State};
+
+handle_info({inet_async, _S, _Ref, {ok, Data}}, State = #state{socket = Socket}) ->
+    Packet = <<(byte_size(Data)):32, Data/binary>>,
+    ok = gen_tcp:send(Socket, Packet),
+    self() ! recv,
+    {noreply, State};
 
 handle_info(_Info, State = #state{}) ->
     io:format("进程[~w]收到消息：~w~n", [self(), _Info]),

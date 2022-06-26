@@ -17,7 +17,9 @@
     , update/2
     , check/2
     , getopts/2
+    , getopt/2
     , setopts/2
+    , setopt/2
     , output/2
     , input/2
 ]).
@@ -163,7 +165,7 @@ merge_fragment(Kcp = #kcp{rcv_queue = RcvQueue, nrcv_que = NRcvQue}, Buffer) ->
             {Kcp, Buffer}
     end.
 
-%% @doc 获取参数
+%% @doc 获取多个参数
 -spec getopts(#kcp{}, list()) -> {ok, [{atom(), term()}]} | {error, term()}.
 getopts(Kcp, Opts) ->
     do_getopts(Kcp, Opts, []).
@@ -171,79 +173,85 @@ getopts(Kcp, Opts) ->
 do_getopts(_Kcp, [], Rets) ->
     {ok, Rets};
 do_getopts(Kcp, [Opt | Opts], Rets) ->
-    case do_getopts(Kcp, Opt) of
+    case getopt(Kcp, Opt) of
         {ok, Val} ->
             do_getopts(Kcp, Opts, [{Opt, Val} | Rets]);
         {error, Reason} ->
             {error, Reason}
     end.
-do_getopts(#kcp{nsnd_buf = NSndBuf, nsnd_que = NsndQue}, waitsnd) -> %% 待发送数据长度
+
+%% @doc 获取单个参数
+-spec getopt(#kcp{}, atom()) -> {ok, term()} | {error, term()}.
+getopt(#kcp{nsnd_buf = NSndBuf, nsnd_que = NsndQue}, waitsnd) -> %% 待发送数据长度
     WaitSnd = NSndBuf + NsndQue,
     {ok, WaitSnd};
-do_getopts(#kcp{nodelay = NoDelay}, nodelay) -> %% 是否启用 nodelay模式
+getopt(#kcp{nodelay = NoDelay}, nodelay) -> %% 是否启用 nodelay模式
     {ok, NoDelay};
-do_getopts(#kcp{interval = Interval}, interval) -> %% 协议内部工作的 interval
+getopt(#kcp{interval = Interval}, interval) -> %% 协议内部工作的 interval
     {ok, Interval};
-do_getopts(#kcp{fastresend = FastResend}, fastresend) -> %% 快速重传模式
+getopt(#kcp{fastresend = FastResend}, fastresend) -> %% 快速重传模式
     {ok, FastResend};
-do_getopts(#kcp{nocwnd = NoCWnd}, nocwnd) -> %% 是否关闭流控
+getopt(#kcp{nocwnd = NoCWnd}, nocwnd) -> %% 是否关闭流控
     {ok, NoCWnd};
-do_getopts(#kcp{snd_wnd = SndWnd}, snd_wnd) -> %% 最大发送窗口
+getopt(#kcp{snd_wnd = SndWnd}, snd_wnd) -> %% 最大发送窗口
     {ok, SndWnd};
-do_getopts(#kcp{rcv_wnd = RcvWnd}, rcv_wnd) -> %% 最大接收窗口
+getopt(#kcp{rcv_wnd = RcvWnd}, rcv_wnd) -> %% 最大接收窗口
     {ok, RcvWnd};
-do_getopts(#kcp{mtu = Mtu}, mtu) -> %% MTU
+getopt(#kcp{mtu = Mtu}, mtu) -> %% MTU
     {ok, Mtu};
-do_getopts(#kcp{rx_minrto = RxMinRto}, minrto) -> %% 最小rto
+getopt(#kcp{rx_minrto = RxMinRto}, minrto) -> %% 最小rto
     {ok, RxMinRto};
-do_getopts(#kcp{output = Output}, output) -> %% output回调方法
+getopt(#kcp{output = Output}, output) -> %% output回调方法
     {ok, Output};
-do_getopts(_Kcp, Opt) ->
+getopt(_Kcp, Opt) ->
     {error, {unknown_opt, Opt}}.
 
-%% @doc 设置参数
+%% @doc 设置多个参数
 -spec setopts(#kcp{}, [{atom(), term()}]) -> {ok, #kcp{}} | {error, term()}.
 setopts(Kcp, []) ->
     {ok, Kcp};
 setopts(Kcp, [Opt | Opts]) ->
-    case setopts(Kcp, Opt) of
+    case setopt(Kcp, Opt) of
         {ok, NewKcp} ->
             setopts(NewKcp, Opts);
         {error, Reason} ->
             {error, Reason}
-    end;
-setopts(Kcp, {nodelay, NoDelay}) when is_integer(NoDelay) andalso NoDelay >= 0 -> %% 是否启用 nodelay模式，0不启用；1启用。
+    end.
+
+%% @doc 设置参数
+-spec setopt(#kcp{}, {atom(), term()}) -> {ok, #kcp{}} | {error, term()}.
+setopt(Kcp, {nodelay, NoDelay}) when is_integer(NoDelay) andalso NoDelay >= 0 -> %% 是否启用 nodelay模式，0不启用；1启用。
     RxMinRto = ?_IF_TRUE(NoDelay > 0, ?KCP_RTO_NDL, ?KCP_RTO_MIN),
     NewKcp = Kcp#kcp{nodelay = NoDelay, rx_minrto = RxMinRto},
     {ok, NewKcp};
-setopts(Kcp, {interval, Interval}) when is_integer(Interval) andalso Interval >= 0 -> %% 协议内部工作的 interval，单位毫秒。
+setopt(Kcp, {interval, Interval}) when is_integer(Interval) andalso Interval >= 0 -> %% 协议内部工作的 interval，单位毫秒。
     NewInterval = min(max(5, Interval), 5000),
     NewKcp = Kcp#kcp{interval = NewInterval},
     {ok, NewKcp};
-setopts(Kcp, {fastresend, FastResend}) when is_integer(FastResend) andalso FastResend >= 0 -> %% 快速重传模式，默认0关闭，可以设置2（2次ACK跨越将会直接重传）。
+setopt(Kcp, {fastresend, FastResend}) when is_integer(FastResend) andalso FastResend >= 0 -> %% 快速重传模式，默认0关闭，可以设置2（2次ACK跨越将会直接重传）。
     NewKcp = Kcp#kcp{fastresend = FastResend},
     {ok, NewKcp};
-setopts(Kcp, {nocwnd, NoCWnd}) when is_integer(NoCWnd) andalso NoCWnd >= 0 -> %% 是否关闭流控，默认是0代表不关闭，1代表关闭。
+setopt(Kcp, {nocwnd, NoCWnd}) when is_integer(NoCWnd) andalso NoCWnd >= 0 -> %% 是否关闭流控，默认是0代表不关闭，1代表关闭。
     NewKcp = Kcp#kcp{nocwnd = NoCWnd},
     {ok, NewKcp};
-setopts(Kcp, {snd_wnd, SndWnd}) when is_integer(SndWnd) andalso SndWnd > 0 -> %% 最大发送窗口，默认为32，单位是包。
+setopt(Kcp, {snd_wnd, SndWnd}) when is_integer(SndWnd) andalso SndWnd > 0 -> %% 最大发送窗口，默认为32，单位是包。
     NewKcp = Kcp#kcp{snd_wnd = SndWnd},
     {ok, NewKcp};
-setopts(Kcp, {rcv_wnd, RcvWnd}) when is_integer(RcvWnd) andalso RcvWnd > 0 -> %% 最大接收窗口，默认为32，单位是包。
+setopt(Kcp, {rcv_wnd, RcvWnd}) when is_integer(RcvWnd) andalso RcvWnd > 0 -> %% 最大接收窗口，默认为32，单位是包。
     NewKcp = Kcp#kcp{rcv_wnd = max(RcvWnd, ?KCP_WND_RCV)},
     {ok, NewKcp};
-setopts(Kcp, {mtu, Mtu}) when is_integer(Mtu) andalso Mtu > 0 -> %% 默认 mtu是1400字节，该值将会影响数据包归并及分片时候的最大传输单元。
+setopt(Kcp, {mtu, Mtu}) when is_integer(Mtu) andalso Mtu > 0 -> %% 默认 mtu是1400字节，该值将会影响数据包归并及分片时候的最大传输单元。
     NewMtu = max(50, min(Mtu, ?KCP_MTU_DEF)),
     NewKcp = Kcp#kcp{mtu = NewMtu, mss = NewMtu - ?KCP_OVERHEAD},
     {ok, NewKcp};
-setopts(Kcp, {minrto, MinRto}) when is_integer(MinRto) andalso MinRto > 0 -> %% 最小 RTO的限制
+setopt(Kcp, {minrto, MinRto}) when is_integer(MinRto) andalso MinRto > 0 -> %% 最小 RTO的限制
     NewMinRto = max(10, min(MinRto, ?KCP_RTO_MAX)),
     NewKcp = Kcp#kcp{rx_minrto = NewMinRto},
     {ok, NewKcp};
-setopts(Kcp, {output, Output = {M, F, A}}) when is_atom(M) andalso is_atom(F) andalso is_list(A) -> %% output回调方法
+setopt(Kcp, {output, Output = {M, F, A}}) when is_atom(M) andalso is_atom(F) andalso is_list(A) -> %% output回调方法
     NewKcp = Kcp#kcp{output = Output},
     {ok, NewKcp};
-setopts(_Kcp, Opt) ->
+setopt(_Kcp, Opt) ->
     {error, {unknown_opt, Opt}}.
 
 %% @doc 底层协议发送数据
@@ -409,13 +417,13 @@ do_parse_data(Kcp, NewKcpSeg = #kcpseg{sn = NewSn}, RcvBuf = {RcvBufIn, RcvBufOu
     case queue:out_r(RcvBuf) of %% 从后往前出队列
         {{value, #kcpseg{sn = NewSn}}, _} -> %% 协议报重复
             Kcp;
-        {{value, KcpSeg = #kcpseg{sn = Sn}}, NewRcvBuf} ->
+        {{value, KcpSeg = #kcpseg{sn = Sn}}, NewRcvBuf0} ->
             case time_diff(NewSn, Sn) > 0 of
                 true ->
                     NewRcvBuf = {lists:reverse([NewKcpSeg | RestSegs], RcvBufIn), RcvBufOut},
                     Kcp#kcp{rcv_buf = NewRcvBuf, nrcv_buf = NRcvBuf + 1};
                 _ ->
-                    do_parse_data(Kcp, NewKcpSeg, NewRcvBuf, NRcvBuf, [KcpSeg | RestSegs])
+                    do_parse_data(Kcp, NewKcpSeg, NewRcvBuf0, NRcvBuf, [KcpSeg | RestSegs])
             end;
         {empty, _} ->
             NewRcvBuf = {lists:reverse([NewKcpSeg | RestSegs], RcvBufIn), RcvBufOut},
@@ -443,7 +451,7 @@ parse_fastack(Kcp = #kcp{snd_una = SndUna, snd_nxt = SndNxt}, Sn, Ts) ->
 
 do_parse_fastack(Kcp = #kcp{snd_buf = SndBuf = {SndBufIn, SndBufOut}}, Sn, Ts, RestSegs) ->
     case queue:out(SndBuf) of
-        {{value, KcpSeg = #kcpseg{sn = SegSn, ts = SegTs, fastack = FastAck}}, NewSndBuf} ->
+        {{value, KcpSeg = #kcpseg{sn = SegSn, ts = SegTs, fastack = FastAck}}, NewSndBuf0} ->
             case time_diff(Sn, SegSn) < 0 of
                 true ->
                     NewSndBuf = {SndBufIn, lists:reverse(RestSegs, SndBufOut)},
@@ -461,7 +469,7 @@ do_parse_fastack(Kcp = #kcp{snd_buf = SndBuf = {SndBufIn, SndBufOut}}, Sn, Ts, R
                             _ ->
                                 KcpSeg
                         end,
-                    do_parse_fastack(Kcp#kcp{snd_buf = NewSndBuf}, Sn, Ts, [NewKcpSeg | RestSegs])
+                    do_parse_fastack(Kcp#kcp{snd_buf = NewSndBuf0}, Sn, Ts, [NewKcpSeg | RestSegs])
             end;
         {empty, _} ->
             NewSndBuf = {SndBufIn, lists:reverse(RestSegs, SndBufOut)},

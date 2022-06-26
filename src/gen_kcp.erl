@@ -169,7 +169,7 @@ handle_call(close, _From, State = #gen_kcp{socket = Socket}) ->
 handle_call({connect, Ip, Port}, _From, State = #gen_kcp{socket = Socket, kcp = Kcp}) ->
     case gen_udp:connect(Socket, Ip, Port) of
         ok ->
-            {ok, NewKcp} = prim_kcp:setopts(Kcp, {output, {?MODULE, output, [true]}}),
+            {ok, NewKcp} = prim_kcp:setopt(Kcp, {output, {?MODULE, output, [true]}}),
             NewState = State#gen_kcp{kcp = NewKcp, is_connected = true},
             {reply, ok, NewState};
         {error, Reason} ->
@@ -183,7 +183,7 @@ handle_call({async_send, Packet}, _From, State) when not is_binary(Packet) ->
     {reply, {error, bad_packet}, State};
 handle_call({async_send, Packet}, From = {Pid, _}, State = #gen_kcp{kcp = Kcp, next_ref = Ref}) ->
     gen_server:reply(From, {ok, Ref}),
-    case prim_kcp:send(Kcp, Packet) of %% TODO 限制发送数量
+    case prim_kcp:send(Kcp, Packet) of %% TODO 发送数据限制
         {ok, NewKcp} ->
             Pid ! {kcp_reply, self(), Ref, ok},
             NewState = State#gen_kcp{kcp = NewKcp, next_ref = Ref + 1},
