@@ -45,8 +45,8 @@ handle_info({inet_async, _S, _Ref, {ok, <<Len:32>>}}, State = #state{socket = So
     {ok, _} = prim_inet:async_recv(Socket, Len, -1),
     {noreply, State};
 
-handle_info({inet_async, _S, _Ref, {ok, Data}}, State = #state{socket = Socket}) ->
-    Packet = <<(byte_size(Data)):32, Data/binary>>,
+handle_info({inet_async, _S, _Ref, {ok, Packet0}}, State = #state{socket = Socket}) ->
+    Packet = <<(byte_size(Packet0)):32, Packet0/binary>>,
     ok = gen_tcp:send(Socket, Packet),
     self() ! recv,
     {noreply, State};

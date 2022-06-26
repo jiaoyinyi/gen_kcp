@@ -16,6 +16,7 @@
     , recv/1
     , update/2
     , check/2
+    , flush/1
     , getopts/2
     , getopt/2
     , setopts/2
