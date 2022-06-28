@@ -251,8 +251,8 @@ handle_info(kcp_update, State = #gen_kcp{kcp = Kcp}) ->
 %% 接收udp协议报
 handle_info({udp, Socket, _Host, _Port, Packet}, State = #gen_kcp{socket = Socket, kcp = Kcp}) ->
     case prim_kcp:input(Kcp, Packet) of
-        {ok, NewKcp0} ->
-            NewState0 = State#gen_kcp{kcp = NewKcp0},
+        {ok, NewKcp} ->
+            NewState0 = State#gen_kcp{kcp = NewKcp},
             NewState = recv_reply(NewState0),
             {noreply, NewState};
         {error, _Reason} ->

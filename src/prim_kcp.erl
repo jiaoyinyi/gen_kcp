@@ -107,63 +107,49 @@ send_add_seg(Kcp = #kcp{conv = Conv, snd_queue = SndQueue, nsnd_que = NSndQue}, 
 %% @doc kcp接收数据
 -spec recv(#kcp{}) -> {ok, #kcp{}, binary()} | {error, term()}.
 recv(Kcp = #kcp{nrcv_que = NRcvQue, rcv_wnd = RcvWnd}) ->
-    PeekSize = peeksize(Kcp),
-    case PeekSize < 0 of
-        true ->
-            {error, kcp_packet_empty}; %% kcp协议报为空
-        _ ->
+    case merge_fragment(Kcp) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, NewKcp0, Bin} ->
             Recover = ?_IF_TRUE(NRcvQue >= RcvWnd, 1, 0),
-            {NewKcp0, Bin} = merge_fragment(Kcp, <<>>),
-            case byte_size(Bin) =/= PeekSize of
-                true ->
-                    {error, kcp_fragment_err}; %% kcp协议段整合错误
-                _ ->
-                    NewKcp1 = #kcp{nrcv_que = NewNRcvQue, rcv_wnd = NewRcvWnd, probe = Probe} = move_to_rcv_queue(NewKcp0),
-                    NewProbe = ?_IF_TRUE(NewNRcvQue < NewRcvWnd andalso Recover =:= 1, Probe bor ?KCP_ASK_TELL, Probe),
-                    NewKcp = NewKcp1#kcp{probe = NewProbe},
-                    {ok, NewKcp, Bin}
-            end
-    end.
-
-%% 计算完整数据包数据大小
-peeksize(#kcp{rcv_queue = RcvQueue, nrcv_que = NRcvQue}) ->
-    case queue:out(RcvQueue) of
-        {empty, _} ->
-            -1;
-        {{value, #kcpseg{frg = 0, len = Len}}, _} ->
-            Len;
-        {{value, #kcpseg{frg = Frg}}, _} ->
-            case NRcvQue < Frg + 1 of
-                true ->
-                    -1;
-                _ ->
-                    do_peeksize(RcvQueue, 0)
-            end
-    end.
-
-do_peeksize(RcvQueue, Size) ->
-    case queue:out(RcvQueue) of
-        {{value, #kcpseg{frg = 0, len = Len}}, _} ->
-            Size + Len;
-        {{value, #kcpseg{len = Len}}, NewRcvQueue} ->
-            do_peeksize(NewRcvQueue, Size + Len);
-        {empty, _} -> %% 正常不会走到这里
-            -1
+            NewKcp1 = #kcp{nrcv_que = NewNRcvQue, rcv_wnd = NewRcvWnd, probe = Probe} = move_to_rcv_queue(NewKcp0),
+            NewProbe = ?_IF_TRUE(NewNRcvQue < NewRcvWnd andalso Recover =:= 1, Probe bor ?KCP_ASK_TELL, Probe),
+            NewKcp = NewKcp1#kcp{probe = NewProbe},
+            {ok, NewKcp, Bin}
     end.
 
 %% 整合分段
-merge_fragment(Kcp = #kcp{rcv_queue = RcvQueue, nrcv_que = NRcvQue}, Buffer) ->
+merge_fragment(Kcp = #kcp{rcv_queue = RcvQueue, nrcv_que = NRcvQue}) ->
     case queue:out(RcvQueue) of
+        {empty, _} ->
+            {error, kcp_packet_empty}; %% kcp协议报为空
         {{value, #kcpseg{frg = 0, data = Data}}, NewRcvQueue} ->
             NewKcp = Kcp#kcp{rcv_queue = NewRcvQueue, nrcv_que = NRcvQue - 1},
-            NewBuffer = <<Buffer/binary, Data/binary>>,
-            {NewKcp, NewBuffer};
-        {{value, #kcpseg{data = Data}}, NewRcvQueue} ->
-            NewKcp = Kcp#kcp{rcv_queue = NewRcvQueue, nrcv_que = NRcvQue - 1},
-            NewBuffer = <<Buffer/binary, Data/binary>>,
-            merge_fragment(NewKcp, NewBuffer);
+            {ok, NewKcp, Data};
+        {{value, #kcpseg{frg = Frg}}, _} ->
+            case NRcvQue < Frg + 1 of
+                true ->
+                    {error, kcp_packet_empty}; %% kcp协议报为空
+                _ ->
+                    do_merge_fragment(Kcp, Frg, [])
+            end
+    end.
+
+do_merge_fragment(Kcp = #kcp{rcv_queue = RcvQueue, nrcv_que = NRcvQue}, Frg, Buffer) ->
+    case queue:out(RcvQueue) of
         {empty, _} ->
-            {Kcp, Buffer}
+            {error, kcp_packet_empty}; %% kcp协议报为空
+        {{value, #kcpseg{frg = 0, data = Data}}, NewRcvQueue} when Frg =:= 0 ->
+            NewKcp = Kcp#kcp{rcv_queue = NewRcvQueue, nrcv_que = NRcvQue - 1},
+            Bin = list_to_binary(lists:reverse([Data | Buffer])),
+            {ok, NewKcp, Bin};
+        {{value, #kcpseg{frg = Frg0, data = Data}}, NewRcvQueue} when Frg0 =:= Frg ->
+            NewKcp = Kcp#kcp{rcv_queue = NewRcvQueue, nrcv_que = NRcvQue - 1},
+            NewBuffer = [Data | Buffer],
+            do_merge_fragment(NewKcp, Frg - 1, NewBuffer);
+        {{value, _}, _} ->
+            io:format("kcp协议段整合错误，接收队列：~w~n", [RcvQueue]),
+            {error, kcp_fragment_err} %% kcp协议段整合错误
     end.
 
 %% @doc 获取多个参数
