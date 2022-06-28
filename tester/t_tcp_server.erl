@@ -24,7 +24,7 @@ start(TcpOpts) ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [TcpOpts], []).
 
 init([TcpOpts]) ->
-    {ok, LSocket} = gen_tcp:listen(40001, [{ip, {192, 168, 31, 235}}, {active, false}, binary, {packet, 0}, {reuseaddr, true} | TcpOpts]),
+    {ok, LSocket} = gen_tcp:listen(40001, [{ip, {127, 0, 0, 1}}, {active, false}, binary, {packet, 0}, {reuseaddr, true} | TcpOpts]),
     self() ! accept,
     {ok, #state{lsocket = LSocket}}.
 

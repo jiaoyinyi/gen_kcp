@@ -36,7 +36,7 @@ test_kcp(Total, Num, Time) ->
 %%    test_kcp([{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}], Data, Num),
 %%    test_kcp([{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}], Data, Num),
 %%    test_kcp([{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 8}], Data, Num),
-    test_kcp([{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 5}], Data, Total, Num, Time),
+    test_kcp(1, [{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 10}], Data, Total, Num, Time),
 %%    test_kcp([{snd_wnd, 1024}, {rcv_wnd, 1024}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 5}], Data, Num),
 %%    test_kcp([{snd_wnd, 1024}, {rcv_wnd, 1024}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 2}], Data, Total, Num, Time),
 
@@ -50,7 +50,7 @@ test_kcp(Total, Num, Time) ->
 %%    test_kcp([{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}], MidData, Num),
 %%    test_kcp([{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}], MidData, Num),
 %%    test_kcp([{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 8}], MidData, Num),
-    test_kcp([{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 5}], MidData, Total, Num, Time),
+    test_kcp(2, [{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 10}], MidData, Total, Num, Time),
 %%    test_kcp([{snd_wnd, 1024}, {rcv_wnd, 1024}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 5}], MidData, Num),
 %%    test_kcp([{snd_wnd, 1024}, {rcv_wnd, 1024}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 2}], MidData, Total, Num, Time),
 
@@ -63,15 +63,15 @@ test_kcp(Total, Num, Time) ->
 %%    test_kcp([{snd_wnd, 256}, {rcv_wnd, 256}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}], BigData, Num),
 %%    test_kcp([{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}], BigData, Num),
 %%    test_kcp([{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}], BigData, Num),
-%%    test_kcp([{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 8}], BigData, Num),
-    test_kcp([{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 5}], BigData, Total, Num, Time),
+%%    test_kcp(1, [{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 8}], BigData, Total, Num, Time),
+    test_kcp(3, [{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 10}], BigData, Total, Num, Time),
 %%    test_kcp([{snd_wnd, 1024}, {rcv_wnd, 1024}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 5}], BigData, Num),
 %%    test_kcp([{snd_wnd, 1024}, {rcv_wnd, 1024}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 2}], BigData, Total, Num, Time),
     ok.
 
-test_kcp(KcpOpts, Data, Total, Num, Time) ->
-    {ok, SPid} = t_kcp_server:start(KcpOpts),
-    {ok, CPid} = t_kcp_client:start(KcpOpts, Data, Total, Num, Time),
+test_kcp(Conv, KcpOpts, Data, Total, Num, Time) ->
+    {ok, SPid} = t_kcp_server:start(Conv, KcpOpts),
+    {ok, CPid} = t_kcp_client:start(Conv, KcpOpts, Data, Total, Num, Time),
     io:format("server pid:~w, client pid:~w~n", [SPid, CPid]),
     receive
         finish ->

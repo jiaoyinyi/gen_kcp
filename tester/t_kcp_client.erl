@@ -8,7 +8,7 @@
 
 -behaviour(gen_server).
 
--export([start/5]).
+-export([start/6]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
     code_change/3]).
 
@@ -20,12 +20,12 @@
 %%% Spawning and gen_server implementation
 %%%===================================================================
 
-start(KcpOpts, Data, Total, Num, Time) ->
-    gen_server:start(?MODULE, [KcpOpts, Data, Total, Num, Time], []).
+start(Conv, KcpOpts, Data, Total, Num, Time) ->
+    gen_server:start(?MODULE, [Conv, KcpOpts, Data, Total, Num, Time], []).
 
-init([KcpOpts, Data, Total, Num, Time]) ->
-    {ok, Socket} = gen_kcp:open(30002, 1, [{ip, {192, 168, 31, 235}}], KcpOpts),
-    ok = gen_kcp:connect(Socket, {192, 168, 31, 235}, 30001),
+init([Conv, KcpOpts, Data, Total, Num, Time]) ->
+    {ok, Socket} = gen_kcp:open(30002, Conv, [{ip, {127, 0, 0, 1}}], KcpOpts),
+    ok = gen_kcp:connect(Socket, {127, 0, 0, 1}, 30001),
     self() ! send,
     self() ! recv,
     {ok, #state{socket = Socket, data = Data, total = Total, num = Num, time = Time, idx = 0, latencies = []}}.

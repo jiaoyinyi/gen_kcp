@@ -24,7 +24,7 @@ start(TcpOpts, Data, Total, Num, Time) ->
     gen_server:start(?MODULE, [TcpOpts, Data, Total, Num, Time], []).
 
 init([TcpOpts, Data, Total, Num, Time]) ->
-    {ok, Socket} = gen_tcp:connect({192, 168, 31, 235}, 40001, [{active, false}, binary, {packet, 0} | TcpOpts]),
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, 40001, [{active, false}, binary, {packet, 0} | TcpOpts]),
     self() ! send,
     self() ! recv,
     {ok, #state{socket = Socket, data = Data, total = Total, num = Num, time = Time, idx = 0, latencies = []}}.
