@@ -152,7 +152,6 @@ init([Port, Conv, UdpOpts, KcpOpts]) ->
                 {ok, NewKcp} ->
                     State = #gen_kcp{socket = Socket, kcp = NewKcp, is_connected = false, next_ref = 1},
                     self() ! kcp_update,
-                    put(print_log_time, 0),
                     {ok, State};
                 {error, Reason} ->
                     {error, Reason}
@@ -187,7 +186,8 @@ handle_call({async_send, Packet}, From = {Pid, _}, State = #gen_kcp{kcp = Kcp, n
     case prim_kcp:send(Kcp, Packet) of %% TODO 发送数据限制
         {ok, NewKcp0} ->
             Pid ! {kcp_reply, self(), Ref, ok},
-            NewKcp = prim_kcp:flush(NewKcp0),
+            {ok, NewKcp1} = prim_kcp:setopt(NewKcp0, {current, timestamp()}),
+            NewKcp = prim_kcp:flush(NewKcp1),
             NewState = State#gen_kcp{kcp = NewKcp, next_ref = Ref + 1},
             {noreply, NewState};
         {error, Reason} ->

@@ -26,8 +26,8 @@ start(Conv, KcpOpts, Data, Total, Num, Time) ->
 init([Conv, KcpOpts, Data, Total, Num, Time]) ->
     {ok, Socket} = gen_kcp:open(30002, Conv, [{ip, {127, 0, 0, 1}}], KcpOpts),
     ok = gen_kcp:connect(Socket, {127, 0, 0, 1}, 30001),
-    self() ! send,
     self() ! recv,
+    erlang:send_after(1000, self(), send),
     {ok, #state{socket = Socket, data = Data, total = Total, num = Num, time = Time, idx = 0, latencies = []}}.
 
 handle_call(_Request, _From, State = #state{}) ->
@@ -54,7 +54,7 @@ handle_info(recv, State = #state{socket = Socket, total = Total, idx = Idx}) whe
 handle_info(recv, State = #state{socket = Socket, data = Data, latencies = Latencies}) ->
     Total = length(Latencies),
     Size = 8 + byte_size(Data),
-    AvgLatency = lists:sum(Latencies) / Total,
+    AvgLatency = lists:sum(Latencies) div Total,
     MaxLatency = lists:max(Latencies),
     MinLatency = lists:min(Latencies),
     {ok, Opts} = gen_kcp:getopts(Socket, [snd_wnd, rcv_wnd, nodelay, fastresend, nocwnd, minrto, interval]),

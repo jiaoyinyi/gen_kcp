@@ -148,7 +148,6 @@ do_merge_fragment(Kcp = #kcp{rcv_queue = RcvQueue, nrcv_que = NRcvQue}, Frg, Buf
             NewBuffer = [Data | Buffer],
             do_merge_fragment(NewKcp, Frg - 1, NewBuffer);
         {{value, _}, _} ->
-            io:format("kcp协议段整合错误，接收队列：~w~n", [RcvQueue]),
             {error, kcp_fragment_err} %% kcp协议段整合错误
     end.
 
@@ -224,7 +223,7 @@ setopt(Kcp, {nocwnd, NoCWnd}) when is_integer(NoCWnd) andalso NoCWnd >= 0 -> %% 
 setopt(Kcp, {snd_wnd, SndWnd}) when is_integer(SndWnd) andalso SndWnd > 0 -> %% 最大发送窗口，默认为32，单位是包。
     NewKcp = Kcp#kcp{snd_wnd = SndWnd},
     {ok, NewKcp};
-setopt(Kcp, {rcv_wnd, RcvWnd}) when is_integer(RcvWnd) andalso RcvWnd > 0 -> %% 最大接收窗口，默认为32，单位是包。
+setopt(Kcp, {rcv_wnd, RcvWnd}) when is_integer(RcvWnd) andalso RcvWnd > 0 -> %% 最大接收窗口，默认为128，单位是包。
     NewKcp = Kcp#kcp{rcv_wnd = max(RcvWnd, ?KCP_WND_RCV)},
     {ok, NewKcp};
 setopt(Kcp, {mtu, Mtu}) when is_integer(Mtu) andalso Mtu > 0 -> %% 默认 mtu是1400字节，该值将会影响数据包归并及分片时候的最大传输单元。
@@ -237,6 +236,9 @@ setopt(Kcp, {minrto, MinRto}) when is_integer(MinRto) andalso MinRto > 0 -> %% �
     {ok, NewKcp};
 setopt(Kcp, {output, Output = {M, F, A}}) when is_atom(M) andalso is_atom(F) andalso is_list(A) -> %% output回调方法
     NewKcp = Kcp#kcp{output = Output},
+    {ok, NewKcp};
+setopt(Kcp, {current, Current}) -> %% 当前时间
+    NewKcp = Kcp#kcp{current = uint32(Current)},
     {ok, NewKcp};
 setopt(_Kcp, Opt) ->
     {error, {unknown_opt, Opt}}.
@@ -598,7 +600,7 @@ flush(Kcp = #kcp{updated = 1, conv = Conv, rcv_nxt = RcvNxt}) ->
     %% 将snd_queue数据移到snd_buf
     NewKcp3 = #kcp{fastresend = FastResend, nodelay = NoDelay, rx_rto = RxRto, snd_buf = SndBuf} = move_to_snd_buf(NewKcp2, NewCWnd),
     %% 计算重传
-    Resent = ?_IF_TRUE(FastResend > 0, uint32(FastResend), 16#ffffffff),
+    Resent = ?_IF_TRUE(FastResend > 0, FastResend, 16#ffffffff),
     RtoMin = ?_IF_TRUE(NoDelay =:= 0, RxRto bsr 3, 0),
     %% 刷新并发送数据报文段
     {NewKcp4, Change, Lost} = flush_data_seg(NewKcp3, SndBuf, Resent, RtoMin, Wnd, 0, 0, [], NewBuffer1),
@@ -646,7 +648,7 @@ probe_win_size(Kcp) ->
 %% 刷新并发送探测窗口指令
 flush_probe_win(Kcp = #kcp{probe = Probe}, KcpSeg, Buffer) ->
     NewBuffer1 =
-        case (Probe band ?KCP_ASK_SEND) =/= 0 of
+        case (Probe band ?KCP_ASK_SEND) > 0 of
             true ->
                 NewBuffer0 = flush_output(Kcp, Buffer),
                 add_buffer(KcpSeg#kcpseg{cmd = ?KCP_CMD_WASK}, NewBuffer0);
@@ -654,7 +656,7 @@ flush_probe_win(Kcp = #kcp{probe = Probe}, KcpSeg, Buffer) ->
                 Buffer
         end,
     NewBuffer =
-        case (Probe band ?KCP_ASK_TELL) =/= 0 of
+        case (Probe band ?KCP_ASK_TELL) > 0 of
             true ->
                 NewBuffer2 = flush_output(Kcp, NewBuffer1),
                 add_buffer(KcpSeg#kcpseg{cmd = ?KCP_CMD_WINS}, NewBuffer2);
