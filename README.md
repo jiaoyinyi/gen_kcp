@@ -79,17 +79,19 @@ waitsnd
 ```
 
 ### 测试
-每20毫秒发送20个108个字节数据  
-kcp测试参数：{snd_wnd, 1024}, {rcv_wnd, 1024}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 5}  
-tcp测试参数：{nodelay,true}, {delay_send,false}
+* 测试代码在tester/t_latency.erl  
+* 每10毫秒发送20个108个字节数据，总共发送10000个数据。  
+* 共同参数 {buffer, 1024 * 32}, {sndbuf, 1024 * 16}, {recbuf, 1024 * 32}  
+* kcp测试参数：{snd_wnd, 1024}, {rcv_wnd, 1024}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 5}  
+* tcp测试参数：{nodelay,true}, {delay_send,false}
 
 协议 | 丢包/延迟 | 10ms | 50ms | 100ms | 200ms
----|---|------|---|-------|---
-kcp | 0% | 22ms | 102ms | 202ms   | 488ms
-tcp | 0% | 21ms   | 101ms | 201ms   | 401ms
-kcp | 5% | 51ms   | 302ms | 697ms   | 1377ms
-tcp | 5% | 242ms  | 363ms | 1149ms  | 2275ms
-kcp | 10% | 71ms   | 399ms | 815ms   | 1919ms
-tcp | 10% | 504ms  | 514ms | 1332ms  | 3513ms
-kcp | 20% | 106ms  | 525ms | 1154ms  | 5173ms
-tcp | 20% | 1017ms | 7114ms | 3436ms | 33210ms
+---|---|----|---|----|---
+kcp | 0% | 22ms | 102ms | 204ms | 414ms
+tcp | 0% | 21ms | 101ms | 207ms | 449ms
+kcp | 5% | 60ms | 336ms | 738ms | 1924ms
+tcp | 5% | 218ms | 1124ms | 2194ms | 4043ms
+kcp | 10% | 77ms | 437ms | 815ms | 906ms
+tcp | 10% | 1286ms | 1892ms | 1332ms | 1497ms
+kcp | 20% | 109ms | 629ms | 2015ms | 7403ms
+tcp | 20% | 2649ms | 3421ms | 4046ms | 11297ms

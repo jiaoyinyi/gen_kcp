@@ -71,6 +71,7 @@
     , nocwnd                                   %% nocwnd: 是否不考虑拥塞窗口
     , output
     , user
+    , log_flag
 }).
 
 %% kcp报文段

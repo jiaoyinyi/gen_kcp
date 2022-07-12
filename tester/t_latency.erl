@@ -64,7 +64,7 @@ test_kcp(Total, Num, Time) ->
 %%    test_kcp([{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}], BigData, Num),
 %%    test_kcp([{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}], BigData, Num),
 %%    test_kcp(1, [{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 8}], BigData, Total, Num, Time),
-%%    test_kcp(3, [{snd_wnd, 512}, {rcv_wnd, 512}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 10}], BigData, Total, Num, Time),
+%%    test_kcp(3, [{snd_wnd, 4096}, {rcv_wnd, 4096}, {nodelay, 2}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 5}], BigData, Total, Num, Time),
 %%    test_kcp([{snd_wnd, 1024}, {rcv_wnd, 1024}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 5}], BigData, Num),
 %%    test_kcp([{snd_wnd, 1024}, {rcv_wnd, 1024}, {nodelay, 1}, {fastresend, 2}, {nocwnd, 1}, {minrto, 10}, {interval, 2}], BigData, Total, Num, Time),
     ok.
@@ -101,7 +101,7 @@ test_tcp(Total, Num, Time) ->
 %%    test_tcp([], MidData, Num),
 %%    test_tcp([{nodelay, true}, {nodelay, true}], MidData, Num),
 %%    test_tcp([{nodelay, false}, {delay_send, true}], MidData, Num),
-    test_tcp([{nodelay, true}, {delay_send, false}], MidData, Total, Num, Time),
+    test_tcp([{buffer, 1024 * 32}, {sndbuf, 1024 * 16}, {recbuf, 1024 * 32}, {nodelay, true}, {delay_send, false}], MidData, Total, Num, Time),
 %%
 %%    io:format("大数据：~n"),
 %%    BigData = list_to_binary(string:chars($a, 3000)),

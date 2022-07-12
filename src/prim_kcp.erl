@@ -75,6 +75,7 @@ create(Conv, User, Output = {M, F, A}) when is_atom(M) andalso is_atom(F) andals
         , dead_link = ?KCP_DEADLINK
         , output = Output
         , user = User
+        , log_flag = false
     }.
 
 %% @doc kcp发送数据
@@ -239,6 +240,9 @@ setopt(Kcp, {output, Output = {M, F, A}}) when is_atom(M) andalso is_atom(F) and
     {ok, NewKcp};
 setopt(Kcp, {current, Current}) -> %% 当前时间
     NewKcp = Kcp#kcp{current = uint32(Current)},
+    {ok, NewKcp};
+setopt(Kcp, {log_flag, LogFlag}) -> %% log标识
+    NewKcp = Kcp#kcp{log_flag = LogFlag},
     {ok, NewKcp};
 setopt(_Kcp, Opt) ->
     {error, {unknown_opt, Opt}}.
@@ -718,7 +722,7 @@ flush_data_seg(Kcp = #kcp{rx_rto = RxRto, current = Current, nodelay = NoDelay, 
                     SendKcpSeg = #kcpseg{xmit = SendXMit} = NewKcpSeg#kcpseg{ts = Current, wnd = Wnd, una = RcvNxt},
                     NewBuffer0 = flush_data_output(NewKcp, seg_size(SendKcpSeg), Buffer),
                     NewBuffer = add_buffer(SendKcpSeg, NewBuffer0),
-                    NewState = ?_IF_TRUE(SendXMit >= DeadLink, 16#ffffffff, State),
+                    NewState = ?_IF_TRUE(SendXMit >= DeadLink, -1, State),
                     flush_data_seg(NewKcp#kcp{state = NewState}, NewSndBuf, Resent, RtoMin, Wnd, NewChange, NewLost, [SendKcpSeg | RestSegs], NewBuffer);
                 _ ->
                     flush_data_seg(NewKcp, NewSndBuf, Resent, RtoMin, Wnd, NewChange, NewLost, [NewKcpSeg | RestSegs], Buffer)

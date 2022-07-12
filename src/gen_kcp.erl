@@ -294,7 +294,7 @@ output(_Socket, _Data, _IsConnected) ->
 
 %% 获取处理后的udp参数
 get_udp_opts(Opts) ->
-    get_udp_opts(Opts, [{active, true}, binary]).
+    get_udp_opts(Opts, [{active, true}, binary, {buffer, 1024 * 32}, {sndbuf, 1024 * 16}, {recbuf, 1024 * 32}]).
 get_udp_opts([], AccOpts) ->
     AccOpts;
 get_udp_opts([{active, _} | Opts], AccOpts) ->
@@ -305,6 +305,12 @@ get_udp_opts([binary | Opts], AccOpts) ->
     get_udp_opts(Opts, AccOpts);
 get_udp_opts([list | Opts], AccOpts) ->
     get_udp_opts(Opts, AccOpts);
+get_udp_opts([{buffer, Buffer} | Opts], AccOpts) ->
+    get_udp_opts(Opts, [{buffer, Buffer} | lists:keydelete(buffer, 1, AccOpts)]);
+get_udp_opts([{sndbuf, SndBuf} | Opts], AccOpts) ->
+    get_udp_opts(Opts, [{sndbuf, SndBuf} | lists:keydelete(sndbuf, 1, AccOpts)]);
+get_udp_opts([{recbuf, RecBuf} | Opts], AccOpts) ->
+    get_udp_opts(Opts, [{recbuf, RecBuf} | lists:keydelete(recbuf, 1, AccOpts)]);
 get_udp_opts([Opt | Opts], AccOpts) ->
     get_udp_opts(Opts, [Opt | AccOpts]).
 
